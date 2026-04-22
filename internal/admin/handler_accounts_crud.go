@@ -116,6 +116,46 @@ func (h *Handler) addAccount(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"success": true, "total_accounts": len(h.Store.Snapshot().Accounts)})
 }
 
+func (h *Handler) updateAccount(w http.ResponseWriter, r *http.Request) {
+	identifier := chi.URLParam(r, "identifier")
+	if decoded, err := url.PathUnescape(identifier); err == nil {
+		identifier = decoded
+	}
+
+	var req map[string]any
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"detail": "invalid json"})
+		return
+	}
+	name, nameOK := fieldStringOptional(req, "name")
+	remark, remarkOK := fieldStringOptional(req, "remark")
+
+	err := h.Store.Update(func(c *config.Config) error {
+		for i, acc := range c.Accounts {
+			if !accountMatchesIdentifier(acc, identifier) {
+				continue
+			}
+			if nameOK {
+				c.Accounts[i].Name = name
+			}
+			if remarkOK {
+				c.Accounts[i].Remark = remark
+			}
+			return nil
+		}
+		return newRequestError("账号不存在")
+	})
+	if err != nil {
+		if detail, ok := requestErrorDetail(err); ok {
+			writeJSON(w, http.StatusNotFound, map[string]any{"detail": detail})
+			return
+		}
+		writeJSON(w, http.StatusBadRequest, map[string]any{"detail": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"success": true, "total_accounts": len(h.Store.Snapshot().Accounts)})
+}
+
 func (h *Handler) deleteAccount(w http.ResponseWriter, r *http.Request) {
 	identifier := chi.URLParam(r, "identifier")
 	if decoded, err := url.PathUnescape(identifier); err == nil {

@@ -140,6 +140,7 @@ Gemini-compatible clients can also send `x-goog-api-key`, `?key=`, or `?api_key=
 | POST | `/admin/proxies/test` | Admin | Test proxy connectivity |
 | GET | `/admin/accounts` | Admin | Paginated account list |
 | POST | `/admin/accounts` | Admin | Add account |
+| PUT | `/admin/accounts/{identifier}` | Admin | Update account name/remark |
 | DELETE | `/admin/accounts/{identifier}` | Admin | Delete account |
 | PUT | `/admin/accounts/{identifier}/proxy` | Admin | Bind/unbind proxy for an account |
 | GET | `/admin/queue/status` | Admin | Account queue status |
@@ -839,6 +840,16 @@ Returned items also include `test_status`, usually `ok` or `failed`.
 
 ```json
 {"email": "user@example.com", "password": "pwd"}
+```
+
+**Response**: `{"success": true, "total_accounts": 6}`
+
+### `PUT /admin/accounts/{identifier}`
+
+Updates the `name` / `remark` of the specified account. The path `identifier` can be email or mobile and cannot be changed.
+
+```json
+{"name": "Primary account", "remark": "Shared with the team"}
 ```
 
 **Response**: `{"success": true, "total_accounts": 6}`

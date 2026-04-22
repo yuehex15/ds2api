@@ -140,6 +140,7 @@ Gemini 兼容客户端还可以使用 `x-goog-api-key`、`?key=` 或 `?api_key=`
 | POST | `/admin/proxies/test` | Admin | 测试代理连通性 |
 | GET | `/admin/accounts` | Admin | 分页账号列表 |
 | POST | `/admin/accounts` | Admin | 添加账号 |
+| PUT | `/admin/accounts/{identifier}` | Admin | 更新账号 name/remark |
 | DELETE | `/admin/accounts/{identifier}` | Admin | 删除账号 |
 | PUT | `/admin/accounts/{identifier}/proxy` | Admin | 为账号绑定/解绑代理 |
 | GET | `/admin/queue/status` | Admin | 账号队列状态 |
@@ -838,6 +839,16 @@ data: {"type":"message_stop"}
 
 ```json
 {"email": "user@example.com", "password": "pwd"}
+```
+
+**响应**：`{"success": true, "total_accounts": 6}`
+
+### `PUT /admin/accounts/{identifier}`
+
+更新指定账号的 `name` / `remark`。路径参数中的 `identifier` 可以是 email 或 mobile，且不可修改。
+
+```json
+{"name": "主账号", "remark": "团队共享"}
 ```
 
 **响应**：`{"success": true, "total_accounts": 6}`

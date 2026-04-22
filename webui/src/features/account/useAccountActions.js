@@ -4,9 +4,12 @@ export function useAccountActions({ apiFetch, t, onMessage, onRefresh, config, f
     const [showAddKey, setShowAddKey] = useState(false)
     const [editingKey, setEditingKey] = useState(null)
     const [showAddAccount, setShowAddAccount] = useState(false)
+    const [showEditAccount, setShowEditAccount] = useState(false)
+    const [editingAccount, setEditingAccount] = useState(null)
     const [newKey, setNewKey] = useState({ key: '', name: '', remark: '' })
     const [copiedKey, setCopiedKey] = useState(null)
     const [newAccount, setNewAccount] = useState({ name: '', remark: '', email: '', mobile: '', password: '' })
+    const [editAccount, setEditAccount] = useState({ name: '', remark: '' })
     const [loading, setLoading] = useState(false)
     const [testing, setTesting] = useState({})
     const [testingAll, setTestingAll] = useState(false)
@@ -36,6 +39,42 @@ export function useAccountActions({ apiFetch, t, onMessage, onRefresh, config, f
         setShowAddKey(false)
         setEditingKey(null)
         setNewKey({ key: '', name: '', remark: '' })
+    }
+
+    const openAddAccount = () => {
+        setShowEditAccount(false)
+        setEditingAccount(null)
+        setEditAccount({ name: '', remark: '' })
+        setNewAccount({ name: '', remark: '', email: '', mobile: '', password: '' })
+        setShowAddAccount(true)
+    }
+
+    const closeAddAccount = () => {
+        setShowAddAccount(false)
+        setNewAccount({ name: '', remark: '', email: '', mobile: '', password: '' })
+    }
+
+    const openEditAccount = (account) => {
+        const identifier = resolveAccountIdentifier(account)
+        if (!identifier) {
+            onMessage('error', t('accountManager.invalidIdentifier'))
+            return
+        }
+        setShowAddAccount(false)
+        setEditingAccount({
+            identifier,
+        })
+        setEditAccount({
+            name: account?.name || '',
+            remark: account?.remark || '',
+        })
+        setShowEditAccount(true)
+    }
+
+    const closeEditAccount = () => {
+        setShowEditAccount(false)
+        setEditingAccount(null)
+        setEditAccount({ name: '', remark: '' })
     }
 
     const addKey = async () => {
@@ -104,13 +143,41 @@ export function useAccountActions({ apiFetch, t, onMessage, onRefresh, config, f
             })
             if (res.ok) {
                 onMessage('success', t('accountManager.addAccountSuccess'))
-                setNewAccount({ name: '', remark: '', email: '', mobile: '', password: '' })
-                setShowAddAccount(false)
+                closeAddAccount()
                 fetchAccounts(1)
                 onRefresh()
             } else {
                 const data = await res.json()
                 onMessage('error', data.detail || t('messages.failedToAdd'))
+            }
+        } catch (e) {
+            onMessage('error', t('messages.networkError'))
+        } finally {
+            setLoading(false)
+        }
+    }
+
+    const updateAccount = async () => {
+        const identifier = String(editingAccount?.identifier || '').trim()
+        if (!identifier) {
+            onMessage('error', t('accountManager.invalidIdentifier'))
+            return
+        }
+        setLoading(true)
+        try {
+            const res = await apiFetch(`/admin/accounts/${encodeURIComponent(identifier)}`, {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(editAccount),
+            })
+            if (res.ok) {
+                onMessage('success', t('accountManager.updateAccountSuccess'))
+                closeEditAccount()
+                fetchAccounts()
+                onRefresh()
+            } else {
+                const data = await res.json()
+                onMessage('error', data.detail || t('messages.requestFailed'))
             }
         } catch (e) {
             onMessage('error', t('messages.networkError'))
@@ -285,7 +352,14 @@ export function useAccountActions({ apiFetch, t, onMessage, onRefresh, config, f
         closeKeyModal,
         editingKey,
         showAddAccount,
-        setShowAddAccount,
+        openAddAccount,
+        closeAddAccount,
+        showEditAccount,
+        editingAccount,
+        editAccount,
+        setEditAccount,
+        openEditAccount,
+        closeEditAccount,
         newKey,
         setNewKey,
         copiedKey,
@@ -302,6 +376,7 @@ export function useAccountActions({ apiFetch, t, onMessage, onRefresh, config, f
         addKey,
         deleteKey,
         addAccount,
+        updateAccount,
         deleteAccount,
         testAccount,
         testAllAccounts,

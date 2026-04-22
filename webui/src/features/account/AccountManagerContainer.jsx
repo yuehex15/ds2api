@@ -6,6 +6,7 @@ import ApiKeysPanel from './ApiKeysPanel'
 import AccountsTable from './AccountsTable'
 import AddKeyModal from './AddKeyModal'
 import AddAccountModal from './AddAccountModal'
+import EditAccountModal from './EditAccountModal'
 
 export default function AccountManagerContainer({ config, onRefresh, onMessage, authFetch }) {
     const { t } = useI18n()
@@ -35,7 +36,14 @@ export default function AccountManagerContainer({ config, onRefresh, onMessage, 
         closeKeyModal,
         editingKey,
         showAddAccount,
-        setShowAddAccount,
+        openAddAccount,
+        closeAddAccount,
+        showEditAccount,
+        editingAccount,
+        editAccount,
+        setEditAccount,
+        openEditAccount,
+        closeEditAccount,
         newKey,
         setNewKey,
         copiedKey,
@@ -52,6 +60,7 @@ export default function AccountManagerContainer({ config, onRefresh, onMessage, 
         addKey,
         deleteKey,
         addAccount,
+        updateAccount,
         deleteAccount,
         testAccount,
         testAllAccounts,
@@ -121,7 +130,8 @@ export default function AccountManagerContainer({ config, onRefresh, onMessage, 
                 resolveAccountIdentifier={resolveAccountIdentifier}
                 proxies={config?.proxies || []}
                 onTestAll={testAllAccounts}
-                onShowAddAccount={() => setShowAddAccount(true)}
+                onShowAddAccount={openAddAccount}
+                onEditAccount={openEditAccount}
                 onTestAccount={testAccount}
                 onDeleteAccount={deleteAccount}
                 onDeleteAllSessions={deleteAllSessions}
@@ -151,8 +161,19 @@ export default function AccountManagerContainer({ config, onRefresh, onMessage, 
                 newAccount={newAccount}
                 setNewAccount={setNewAccount}
                 loading={loading}
-                onClose={() => setShowAddAccount(false)}
+                onClose={closeAddAccount}
                 onAdd={addAccount}
+            />
+
+            <EditAccountModal
+                show={showEditAccount}
+                t={t}
+                editingAccount={editingAccount}
+                editAccount={editAccount}
+                setEditAccount={setEditAccount}
+                loading={loading}
+                onClose={closeEditAccount}
+                onSave={updateAccount}
             />
         </div>
     )

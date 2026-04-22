@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { ChevronLeft, ChevronRight, Check, Copy, Play, Plus, Trash2, FolderX } from 'lucide-react'
+import { ChevronLeft, ChevronRight, Check, Copy, Pencil, Play, Plus, Trash2, FolderX } from 'lucide-react'
 import clsx from 'clsx'
 
 export default function AccountsTable({
@@ -20,6 +20,7 @@ export default function AccountsTable({
     proxies,
     onTestAll,
     onShowAddAccount,
+    onEditAccount,
     onTestAccount,
     onDeleteAccount,
     onDeleteAllSessions,
@@ -180,6 +181,14 @@ export default function AccountsTable({
                                             </option>
                                         ))}
                                     </select>
+                                    <button
+                                        onClick={() => onEditAccount(acc)}
+                                        disabled={!id}
+                                        className="p-1 lg:p-1.5 text-muted-foreground hover:text-primary hover:bg-primary/10 rounded-md transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                                        title={id ? t('accountManager.editAccountTitle') : t('accountManager.invalidIdentifier')}
+                                    >
+                                        <Pencil className="w-3.5 h-3.5 lg:w-4 lg:h-4" />
+                                    </button>
                                     <button
                                         onClick={() => onTestAccount(id)}
                                         disabled={testing[id]}

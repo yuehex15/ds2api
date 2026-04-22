@@ -7,6 +7,8 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/go-chi/chi/v5"
 )
 
 func TestListAccountsPageSizeCapIs5000(t *testing.T) {
@@ -49,5 +51,38 @@ func TestListAccountsPageSizeAbove5000ClampedTo5000(t *testing.T) {
 	}
 	if ps, _ := payload["page_size"].(float64); ps != 5000 {
 		t.Fatalf("expected page_size clamped to 5000, got %v", payload["page_size"])
+	}
+}
+
+func TestUpdateAccountMetadataPreservesCredentials(t *testing.T) {
+	h := newAdminTestHandler(t, `{
+		"accounts":[{"email":"u@example.com","name":"old name","remark":"old remark","password":"secret"}]
+	}`)
+
+	r := chi.NewRouter()
+	r.Put("/admin/accounts/{identifier}", h.updateAccount)
+
+	body := []byte(`{"name":"new name","remark":"new remark"}`)
+	req := httptest.NewRequest(http.MethodPut, "/admin/accounts/u@example.com", strings.NewReader(string(body)))
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("unexpected status: %d body=%s", rec.Code, rec.Body.String())
+	}
+
+	snap := h.Store.Snapshot()
+	if len(snap.Accounts) != 1 {
+		t.Fatalf("unexpected accounts after update: %#v", snap.Accounts)
+	}
+	acc := snap.Accounts[0]
+	if acc.Email != "u@example.com" {
+		t.Fatalf("identifier changed unexpectedly: %#v", acc)
+	}
+	if acc.Name != "new name" || acc.Remark != "new remark" {
+		t.Fatalf("metadata update did not persist: %#v", acc)
+	}
+	if acc.Password != "secret" {
+		t.Fatalf("password should be preserved, got %#v", acc)
 	}
 }
