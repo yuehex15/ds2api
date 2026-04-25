@@ -76,7 +76,7 @@ func TestBuildOpenAIHistoryTranscriptUsesInjectedFileWrapper(t *testing.T) {
 	if !strings.Contains(transcript, "[reasoning_content]") || !strings.Contains(transcript, "hidden reasoning") {
 		t.Fatalf("expected reasoning block preserved, got %q", transcript)
 	}
-	if !strings.Contains(transcript, "<tools>") {
+	if !strings.Contains(transcript, "<tool_calls>") {
 		t.Fatalf("expected tool calls preserved, got %q", transcript)
 	}
 	if !strings.HasSuffix(transcript, "\n[file name]: IGNORE\n[file content begin]\n") {
@@ -180,7 +180,7 @@ func TestApplyHistorySplitCarriesHistoryText(t *testing.T) {
 	}
 }
 
-func TestChatCompletionsHistorySplitUploadsIgnoreFileAndKeepsLatestPrompt(t *testing.T) {
+func TestChatCompletionsHistorySplitUploadsHistoryFileAndKeepsLatestPrompt(t *testing.T) {
 	ds := &inlineUploadDSStub{}
 	h := &Handler{
 		Store: mockOpenAIConfig{
@@ -210,7 +210,7 @@ func TestChatCompletionsHistorySplitUploadsIgnoreFileAndKeepsLatestPrompt(t *tes
 		t.Fatalf("expected 1 upload call, got %d", len(ds.uploadCalls))
 	}
 	upload := ds.uploadCalls[0]
-	if upload.Filename != "IGNORE" {
+	if upload.Filename != "HISTORY.txt" {
 		t.Fatalf("unexpected upload filename: %q", upload.Filename)
 	}
 	if upload.Purpose != "assistants" {

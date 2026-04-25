@@ -106,6 +106,26 @@ func TestClaudeProxyViaOpenAIUsesGlobalAliasMapping(t *testing.T) {
 	}
 }
 
+func TestClaudeProxyViaOpenAIPreservesThinkingOverride(t *testing.T) {
+	openAI := &openAIProxyCaptureStub{}
+	h := &Handler{
+		Store:  claudeProxyStoreStub{aliases: map[string]string{"claude-sonnet-4-6": "deepseek-v4-flash"}},
+		OpenAI: openAI,
+	}
+	req := httptest.NewRequest(http.MethodPost, "/anthropic/v1/messages", strings.NewReader(`{"model":"claude-sonnet-4-6","messages":[{"role":"user","content":"hi"}],"thinking":{"type":"disabled"},"stream":false}`))
+	rec := httptest.NewRecorder()
+
+	h.Messages(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("unexpected status: %d body=%s", rec.Code, rec.Body.String())
+	}
+	thinking, _ := openAI.seenReq["thinking"].(map[string]any)
+	if thinking["type"] != "disabled" {
+		t.Fatalf("expected translated OpenAI request to preserve disabled thinking, got %#v", openAI.seenReq)
+	}
+}
+
 func TestClaudeProxyTranslatesInlineImageToOpenAIDataURL(t *testing.T) {
 	openAI := &openAIProxyCaptureStub{}
 	h := &Handler{OpenAI: openAI}

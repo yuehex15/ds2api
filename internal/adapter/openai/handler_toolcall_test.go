@@ -217,8 +217,8 @@ func TestHandleStreamIncompleteCapturedToolJSONFlushesAsTextOnFinalize(t *testin
 func TestHandleStreamEmitsDistinctToolCallIDsAcrossSeparateToolBlocks(t *testing.T) {
 	h := &Handler{}
 	resp := makeSSEHTTPResponse(
-		`data: {"p":"response/content","v":"前置文本\n<tools>\n  <tool_call>\n    <tool_name>read_file</tool_name>\n    <param>{\"path\":\"README.MD\"}</param>\n  </tool_call>\n</tools>"}`,
-		`data: {"p":"response/content","v":"中间文本\n<tools>\n  <tool_call>\n    <tool_name>search</tool_name>\n    <param>{\"q\":\"golang\"}</param>\n  </tool_call>\n</tools>"}`,
+		`data: {"p":"response/content","v":"前置文本\n<tool_calls>\n  <invoke name=\"read_file\">\n    <parameter name=\"path\">README.MD</parameter>\n  </invoke>\n</tool_calls>"}`,
+		`data: {"p":"response/content","v":"中间文本\n<tool_calls>\n  <invoke name=\"search\">\n    <parameter name=\"q\">golang</parameter>\n  </invoke>\n</tool_calls>"}`,
 		`data: [DONE]`,
 	)
 	rec := httptest.NewRecorder()

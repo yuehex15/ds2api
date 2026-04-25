@@ -136,6 +136,22 @@ func TestNormalizeOpenAIResponsesRequestThinkingExtraBodyFallback(t *testing.T) 
 	}
 }
 
+func TestNormalizeOpenAIResponsesRequestReasoningDisablesThinking(t *testing.T) {
+	store := newEmptyStoreForNormalizeTest(t)
+	req := map[string]any{
+		"model":     "gpt-4o",
+		"input":     "ping",
+		"reasoning": map[string]any{"effort": "none"},
+	}
+	n, err := normalizeOpenAIResponsesRequest(store, req, "")
+	if err != nil {
+		t.Fatalf("normalize failed: %v", err)
+	}
+	if n.Thinking {
+		t.Fatalf("expected reasoning.effort=none to disable thinking")
+	}
+}
+
 func TestNormalizeOpenAIResponsesRequestToolChoiceRequired(t *testing.T) {
 	store := newEmptyStoreForNormalizeTest(t)
 	req := map[string]any{

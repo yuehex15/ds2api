@@ -12,9 +12,10 @@ import (
 )
 
 const (
-	historySplitFilename    = "IGNORE"
-	historySplitContentType = "text/plain; charset=utf-8"
-	historySplitPurpose     = "assistants"
+	historySplitFilename         = "HISTORY.txt"
+	historySplitInjectedFilename = "IGNORE"
+	historySplitContentType      = "text/plain; charset=utf-8"
+	historySplitPurpose          = "assistants"
 )
 
 func (h *Handler) applyHistorySplit(ctx context.Context, a *auth.RequestAuth, stdReq util.StandardRequest) (util.StandardRequest, error) {
@@ -114,7 +115,7 @@ func buildOpenAIHistoryTranscript(messages []any) string {
 	if transcript == "" {
 		return ""
 	}
-	return fmt.Sprintf("[file content end]\n\n%s\n\n[file name]: %s\n[file content begin]\n", transcript, historySplitFilename)
+	return fmt.Sprintf("[file content end]\n\n%s\n\n[file name]: %s\n[file content begin]\n", transcript, historySplitInjectedFilename)
 }
 
 func prependUniqueRefFileID(existing []string, fileID string) []string {

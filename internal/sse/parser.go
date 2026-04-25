@@ -99,6 +99,10 @@ func ParseSSEChunkForContent(chunk map[string]any, thinkingEnabled bool, current
 	if transitioned {
 		newType = "text"
 	}
+	if !thinkingEnabled {
+		parts = dropThinkingParts(parts)
+		newType = "text"
+	}
 	return parts, false, newType
 }
 
@@ -172,6 +176,9 @@ func updateTypeFromNestedResponse(path string, v any, newType *string) {
 func resolvePartType(path string, thinkingEnabled bool, newType string) string {
 	switch {
 	case path == "response/thinking_content":
+		if !thinkingEnabled {
+			return "thinking"
+		}
 		if newType == "text" {
 			return "text"
 		}
@@ -185,6 +192,20 @@ func resolvePartType(path string, thinkingEnabled bool, newType string) string {
 	default:
 		return "text"
 	}
+}
+
+func dropThinkingParts(parts []ContentPart) []ContentPart {
+	if len(parts) == 0 {
+		return parts
+	}
+	out := parts[:0]
+	for _, p := range parts {
+		if p.Type == "thinking" {
+			continue
+		}
+		out = append(out, p)
+	}
+	return out
 }
 
 func appendChunkValueContent(v any, partType string, newType *string, parts *[]ContentPart, path string) bool {

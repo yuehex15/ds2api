@@ -22,7 +22,7 @@ func TestFormatToolCallsForPromptXML(t *testing.T) {
 	if got == "" {
 		t.Fatal("expected non-empty formatted tool calls")
 	}
-	if got != "<tools>\n  <tool_call>\n    <tool_name>search_web</tool_name>\n    <param>\n      <query><![CDATA[latest]]></query>\n    </param>\n  </tool_call>\n</tools>" {
+	if got != "<tool_calls>\n  <invoke name=\"search_web\">\n    <parameter name=\"query\"><![CDATA[latest]]></parameter>\n  </invoke>\n</tool_calls>" {
 		t.Fatalf("unexpected formatted tool call XML: %q", got)
 	}
 }
@@ -34,7 +34,7 @@ func TestFormatToolCallsForPromptEscapesXMLEntities(t *testing.T) {
 			"arguments": `{"q":"a < b && c > d"}`,
 		},
 	})
-	want := "<tools>\n  <tool_call>\n    <tool_name>search&lt;&amp;&gt;</tool_name>\n    <param>\n      <q><![CDATA[a < b && c > d]]></q>\n    </param>\n  </tool_call>\n</tools>"
+	want := "<tool_calls>\n  <invoke name=\"search&lt;&amp;&gt;\">\n    <parameter name=\"q\"><![CDATA[a < b && c > d]]></parameter>\n  </invoke>\n</tool_calls>"
 	if got != want {
 		t.Fatalf("unexpected escaped tool call XML: %q", got)
 	}
@@ -50,7 +50,7 @@ func TestFormatToolCallsForPromptUsesCDATAForMultilineContent(t *testing.T) {
 			},
 		},
 	})
-	want := "<tools>\n  <tool_call>\n    <tool_name>write_file</tool_name>\n    <param>\n      <content><![CDATA[#!/bin/bash\nprintf \"hello\"\n]]></content>\n      <path><![CDATA[script.sh]]></path>\n    </param>\n  </tool_call>\n</tools>"
+	want := "<tool_calls>\n  <invoke name=\"write_file\">\n    <parameter name=\"content\"><![CDATA[#!/bin/bash\nprintf \"hello\"\n]]></parameter>\n    <parameter name=\"path\"><![CDATA[script.sh]]></parameter>\n  </invoke>\n</tool_calls>"
 	if got != want {
 		t.Fatalf("unexpected multiline cdata tool call XML: %q", got)
 	}

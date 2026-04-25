@@ -1,17 +1,16 @@
 'use strict';
 const { parseToolCalls } = require('./parse');
 
-// Tag pairs ordered longest-first: wrapper tags checked before inner tags.
+// XML wrapper tag pair used by the streaming sieve.
 const XML_TOOL_TAG_PAIRS = [
-  { open: '<tools', close: '</tools>' },
-  { open: '<tool_call', close: '</tool_call>' },
+  { open: '<tool_calls', close: '</tool_calls>' },
 ];
 
 const XML_TOOL_OPENING_TAGS = XML_TOOL_TAG_PAIRS.map(p => p.open);
 
 function consumeXMLToolCapture(captured, toolNames, trimWrappingJSONFence) {
   const lower = captured.toLowerCase();
-  // Find the FIRST matching open/close pair, preferring wrapper tags.
+  // Find the FIRST matching open/close pair for the canonical wrapper.
   for (const pair of XML_TOOL_TAG_PAIRS) {
     const openIdx = lower.indexOf(pair.open);
     if (openIdx < 0) {
@@ -21,7 +20,7 @@ function consumeXMLToolCapture(captured, toolNames, trimWrappingJSONFence) {
     const closeIdx = lower.lastIndexOf(pair.close);
     if (closeIdx < openIdx) {
       // Opening tag present but specific closing tag hasn't arrived.
-      // Return not-ready — do NOT fall through to inner pairs.
+      // Return not-ready so buffering continues until the wrapper closes.
       return { ready: false, prefix: '', calls: [], suffix: '' };
     }
     const closeEnd = closeIdx + pair.close.length;

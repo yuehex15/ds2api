@@ -27,10 +27,21 @@ func TestResolveThinkingEnabledUsesExtraBodyFallback(t *testing.T) {
 }
 
 func TestResolveThinkingEnabledMapsReasoningEffortToEnabled(t *testing.T) {
-	for _, effort := range []string{"low", "medium", "high", "xhigh"} {
+	for _, effort := range []string{"minimal", "low", "medium", "high", "xhigh"} {
 		if got := ResolveThinkingEnabled(map[string]any{"reasoning_effort": effort}, false); !got {
 			t.Fatalf("expected reasoning_effort=%s to enable thinking", effort)
 		}
+	}
+}
+
+func TestResolveThinkingEnabledMapsReasoningObject(t *testing.T) {
+	req := map[string]any{"reasoning": map[string]any{"effort": "none"}}
+	if got := ResolveThinkingEnabled(req, true); got {
+		t.Fatalf("expected reasoning.effort=none to disable thinking")
+	}
+	req = map[string]any{"reasoning": map[string]any{"effort": "medium"}}
+	if got := ResolveThinkingEnabled(req, false); !got {
+		t.Fatalf("expected reasoning.effort=medium to enable thinking")
 	}
 }
 

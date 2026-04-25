@@ -16,8 +16,8 @@ var promptXMLTextEscaper = strings.NewReplacer(
 
 var promptXMLNamePattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_.:-]*$`)
 
-// FormatToolCallsForPrompt renders a tool_calls slice into the canonical
-// prompt-visible history block used across adapters.
+// FormatToolCallsForPrompt renders a tool_calls slice into the prompt-visible
+// invoke/parameter history block used across adapters.
 func FormatToolCallsForPrompt(raw any) string {
 	calls, ok := raw.([]any)
 	if !ok || len(calls) == 0 {
@@ -38,7 +38,7 @@ func FormatToolCallsForPrompt(raw any) string {
 	if len(blocks) == 0 {
 		return ""
 	}
-	return "<tools>\n" + strings.Join(blocks, "\n") + "\n</tools>"
+	return "<tool_calls>\n" + strings.Join(blocks, "\n") + "\n</tool_calls>"
 }
 
 // StringifyToolCallArguments normalizes tool arguments into a compact string
@@ -93,28 +93,99 @@ func formatToolCallForPrompt(call map[string]any) string {
 	}
 
 	parameters := formatToolCallParametersForPrompt(argsRaw)
+	if parameters == "" {
+		return `  <invoke name="` + escapeXMLAttribute(name) + `"></invoke>`
+	}
 
-	return "  <tool_call>\n" +
-		"    <tool_name>" + escapeXMLText(name) + "</tool_name>\n" +
+	return "  <invoke name=\"" + escapeXMLAttribute(name) + "\">\n" +
 		parameters + "\n" +
-		"  </tool_call>"
+		"  </invoke>"
 }
 
 func formatToolCallParametersForPrompt(raw any) string {
 	value := normalizePromptToolCallValue(raw)
-	body, ok := renderPromptToolXMLBody(value, "      ")
-	if ok {
-		if strings.TrimSpace(body) == "" {
-			return "    <param></param>"
-		}
-		return "    <param>\n" + body + "\n    </param>"
+	body, ok := renderPromptToolParameters(value, "    ")
+	if ok && strings.TrimSpace(body) != "" {
+		return body
 	}
 
 	fallback := StringifyToolCallArguments(raw)
 	if strings.TrimSpace(fallback) == "" {
-		fallback = "{}"
+		return ""
 	}
-	return "    <param><content>" + renderPromptXMLText(fallback) + "</content></param>"
+	return "    <parameter name=\"content\">" + renderPromptXMLText(fallback) + "</parameter>"
+}
+
+func renderPromptToolParameters(value any, indent string) (string, bool) {
+	switch v := value.(type) {
+	case nil:
+		return "", true
+	case map[string]any:
+		if len(v) == 0 {
+			return "", true
+		}
+		keys := make([]string, 0, len(v))
+		for k := range v {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		lines := make([]string, 0, len(keys))
+		for _, key := range keys {
+			rendered, ok := renderPromptParameterNode(key, v[key], indent)
+			if !ok {
+				return "", false
+			}
+			lines = append(lines, rendered)
+		}
+		return strings.Join(lines, "\n"), true
+	case []any:
+		lines := make([]string, 0, len(v))
+		for _, item := range v {
+			rendered, ok := renderPromptParameterNode("item", item, indent)
+			if !ok {
+				return "", false
+			}
+			lines = append(lines, rendered)
+		}
+		return strings.Join(lines, "\n"), true
+	case string:
+		return indent + `<parameter name="content">` + renderPromptXMLText(v) + `</parameter>`, true
+	default:
+		return indent + `<parameter name="value">` + renderPromptXMLText(fmt.Sprint(v)) + `</parameter>`, true
+	}
+}
+
+func renderPromptParameterNode(name string, value any, indent string) (string, bool) {
+	trimmedName := strings.TrimSpace(name)
+	if trimmedName == "" {
+		return "", false
+	}
+	switch v := value.(type) {
+	case nil:
+		return indent + `<parameter name="` + escapeXMLAttribute(trimmedName) + `"></parameter>`, true
+	case map[string]any:
+		body, ok := renderPromptToolXMLBody(v, indent+"  ")
+		if !ok {
+			return "", false
+		}
+		if strings.TrimSpace(body) == "" {
+			return indent + `<parameter name="` + escapeXMLAttribute(trimmedName) + `"></parameter>`, true
+		}
+		return indent + `<parameter name="` + escapeXMLAttribute(trimmedName) + "\">\n" + body + "\n" + indent + `</parameter>`, true
+	case []any:
+		body, ok := renderPromptToolXMLArray(v, indent+"  ")
+		if !ok {
+			return "", false
+		}
+		if strings.TrimSpace(body) == "" {
+			return indent + `<parameter name="` + escapeXMLAttribute(trimmedName) + `"></parameter>`, true
+		}
+		return indent + `<parameter name="` + escapeXMLAttribute(trimmedName) + "\">\n" + body + "\n" + indent + `</parameter>`, true
+	case string:
+		return indent + `<parameter name="` + escapeXMLAttribute(trimmedName) + `">` + renderPromptXMLText(v) + `</parameter>`, true
+	default:
+		return indent + `<parameter name="` + escapeXMLAttribute(trimmedName) + `">` + renderPromptXMLText(fmt.Sprint(v)) + `</parameter>`, true
+	}
 }
 
 func normalizePromptToolCallValue(raw any) any {
@@ -244,6 +315,18 @@ func renderPromptXMLText(text string) string {
 
 func isValidPromptXMLName(name string) bool {
 	return promptXMLNamePattern.MatchString(strings.TrimSpace(name))
+}
+
+func escapeXMLAttribute(text string) string {
+	if text == "" {
+		return ""
+	}
+	return strings.NewReplacer(
+		"&", "&amp;",
+		`"`, "&quot;",
+		"<", "&lt;",
+		">", "&gt;",
+	).Replace(text)
 }
 
 func normalizeToolArgumentString(raw string) string {

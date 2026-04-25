@@ -52,6 +52,7 @@ func (h *Handler) proxyViaOpenAI(w http.ResponseWriter, r *http.Request, store C
 		}
 	}
 	translatedReq := translatorcliproxy.ToOpenAI(sdktranslator.FormatClaude, translateModel, raw, stream)
+	translatedReq = applyExplicitThinkingOverrideToOpenAIRequest(translatedReq, req)
 
 	isVercelPrepare := strings.TrimSpace(r.URL.Query().Get("__stream_prepare")) == "1"
 	isVercelRelease := strings.TrimSpace(r.URL.Query().Get("__stream_release")) == "1"
@@ -121,6 +122,27 @@ func (h *Handler) proxyViaOpenAI(w http.ResponseWriter, r *http.Request, store C
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(converted)
 	return true
+}
+
+func applyExplicitThinkingOverrideToOpenAIRequest(translated []byte, original map[string]any) []byte {
+	enabled, ok := util.ResolveThinkingOverride(original)
+	if !ok {
+		return translated
+	}
+	req := map[string]any{}
+	if err := json.Unmarshal(translated, &req); err != nil {
+		return translated
+	}
+	typ := "disabled"
+	if enabled {
+		typ = "enabled"
+	}
+	req["thinking"] = map[string]any{"type": typ}
+	out, err := json.Marshal(req)
+	if err != nil {
+		return translated
+	}
+	return out
 }
 
 func (h *Handler) handleClaudeStreamRealtime(w http.ResponseWriter, r *http.Request, resp *http.Response, model string, messages []any, thinkingEnabled, searchEnabled bool, toolNames []string) {

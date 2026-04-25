@@ -36,91 +36,137 @@ func BuildToolCallInstructions(toolNames []string) string {
 
 	return `TOOL CALL FORMAT — FOLLOW EXACTLY:
 
-<tools>
-  <tool_call>
-    <tool_name>TOOL_NAME_HERE</tool_name>
-    <param>
-      <PARAMETER_NAME><![CDATA[PARAMETER_VALUE]]></PARAMETER_NAME>
-    </param>
-  </tool_call>
-</tools>
+<tool_calls>
+  <invoke name="TOOL_NAME_HERE">
+    <parameter name="PARAMETER_NAME"><![CDATA[PARAMETER_VALUE]]></parameter>
+  </invoke>
+</tool_calls>
 
 RULES:
-1) Use the <tools> XML wrapper format only.
-2) Put one or more <tool_call> entries under a single <tools> root.
-3) Use <tool_name> for the tool name and <param> for the argument container.
+1) Use the <tool_calls> XML wrapper format only.
+2) Put one or more <invoke> entries under a single <tool_calls> root.
+3) Put the tool name in the invoke name attribute: <invoke name="TOOL_NAME">.
 4) All string values must use <![CDATA[...]]>, even short ones. This includes code, scripts, file contents, prompts, paths, names, and queries.
-5) Objects use nested XML elements. Arrays may repeat the same tag or use <item> children.
-6) Numbers, booleans, and null stay plain text.
-7) Use only the parameter names in the tool schema. Do not invent fields.
-8) Do NOT wrap XML in markdown fences. Do NOT output explanations, role markers, or internal monologue.
+5) Every top-level argument must be a <parameter name="ARG_NAME">...</parameter> node.
+6) Objects use nested XML elements inside the parameter body. Arrays may repeat <item> children.
+7) Numbers, booleans, and null stay plain text.
+8) Use only the parameter names in the tool schema. Do not invent fields.
+9) Do NOT wrap XML in markdown fences. Do NOT output explanations, role markers, or internal monologue.
 
 PARAMETER SHAPES:
-- string => <name><![CDATA[value]]></name>
-- object => nested XML elements
-- array => repeated tags or <item> children
-- number/bool/null => plain text
+- string => <parameter name="x"><![CDATA[value]]></parameter>
+- object => <parameter name="x"><field>...</field></parameter>
+- array => <parameter name="x"><item>...</item><item>...</item></parameter>
+- number/bool/null => <parameter name="x">plain_text</parameter>
 
 【WRONG — Do NOT do these】:
 
 Wrong 1 — mixed text after XML:
-  <tools>...</tools> I hope this helps.
-Wrong 2 — JSON payload inside <param>:
-  <tool_call><tool_name>` + ex1 + `</tool_name><param>{"path":"x"}</param></tool_call>
-Wrong 3 — Markdown code fences:
+  <tool_calls>...</tool_calls> I hope this helps.
+Wrong 2 — Markdown code fences:
   ` + "```xml" + `
-  <tools>...</tools>
+  <tool_calls>...</tool_calls>
   ` + "```" + `
 
-Remember: The ONLY valid way to use tools is the <tools>...</tools> XML block at the end of your response.
+Remember: The ONLY valid way to use tools is the <tool_calls>...</tool_calls> XML block at the end of your response.
 
 【CORRECT EXAMPLES】:
 
 Example A — Single tool:
-<tools>
-  <tool_call>
-    <tool_name>` + ex1 + `</tool_name>
-    <param>` + ex1Params + `</param>
-  </tool_call>
-</tools>
+<tool_calls>
+  <invoke name="` + ex1 + `">
+` + indentPromptParameters(ex1Params, "    ") + `
+  </invoke>
+</tool_calls>
 
 Example B — Two tools in parallel:
-<tools>
-  <tool_call>
-    <tool_name>` + ex1 + `</tool_name>
-    <param>` + ex1Params + `</param>
-  </tool_call>
-  <tool_call>
-    <tool_name>` + ex2 + `</tool_name>
-    <param>` + ex2Params + `</param>
-  </tool_call>
-</tools>
+<tool_calls>
+  <invoke name="` + ex1 + `">
+` + indentPromptParameters(ex1Params, "    ") + `
+  </invoke>
+  <invoke name="` + ex2 + `">
+` + indentPromptParameters(ex2Params, "    ") + `
+  </invoke>
+  <invoke name="Read">
+    <parameter name="file_path">` + promptCDATA("/abs/path/to/another-file.txt") + `</parameter>
+  </invoke>
+</tool_calls>
 
 Example C — Tool with nested XML parameters:
-<tools>
-  <tool_call>
-    <tool_name>` + ex3 + `</tool_name>
-    <param>` + ex3Params + `</param>
-  </tool_call>
-</tools>
- 
+<tool_calls>
+  <invoke name="` + ex3 + `">
+` + indentPromptParameters(ex3Params, "    ") + `
+  </invoke>
+</tool_calls>
+
 Example D — Tool with long script using CDATA (RELIABLE FOR CODE/SCRIPTS):
-<tools>
-  <tool_call>
-    <tool_name>` + ex2 + `</tool_name>
-    <param>
-      <path>` + promptCDATA("script.sh") + `</path>
-      <content><![CDATA[
+<tool_calls>
+  <invoke name="` + ex2 + `">
+    <parameter name="path">` + promptCDATA("script.sh") + `</parameter>
+    <parameter name="content"><![CDATA[
 #!/bin/bash
 if [ "$1" == "test" ]; then
   echo "Success!"
 fi
-]]></content>
-    </param>
-  </tool_call>
-</tools>
+]]></parameter>
+  </invoke>
+</tool_calls>
 
 `
+}
+
+func indentPromptParameters(body, indent string) string {
+	if strings.TrimSpace(body) == "" {
+		return indent + `<parameter name="content"></parameter>`
+	}
+	lines := strings.Split(body, "\n")
+	for i, line := range lines {
+		if strings.TrimSpace(line) == "" {
+			lines[i] = line
+			continue
+		}
+		lines[i] = indent + line
+	}
+	return strings.Join(lines, "\n")
+}
+
+func wrapParameter(name, inner string) string {
+	return `<parameter name="` + name + `">` + inner + `</parameter>`
+}
+
+func exampleReadParams(name string) string {
+	switch strings.TrimSpace(name) {
+	case "Read":
+		return wrapParameter("file_path", promptCDATA("README.md"))
+	case "Glob":
+		return wrapParameter("pattern", promptCDATA("**/*.go")) + "\n" + wrapParameter("path", promptCDATA("."))
+	default:
+		return wrapParameter("path", promptCDATA("src/main.go"))
+	}
+}
+
+func exampleWriteOrExecParams(name string) string {
+	switch strings.TrimSpace(name) {
+	case "Bash", "execute_command":
+		return wrapParameter("command", promptCDATA("pwd"))
+	case "exec_command":
+		return wrapParameter("cmd", promptCDATA("pwd"))
+	case "Edit":
+		return wrapParameter("file_path", promptCDATA("README.md")) + "\n" + wrapParameter("old_string", promptCDATA("foo")) + "\n" + wrapParameter("new_string", promptCDATA("bar"))
+	case "MultiEdit":
+		return wrapParameter("file_path", promptCDATA("README.md")) + "\n" + `<parameter name="edits"><item><old_string>` + promptCDATA("foo") + `</old_string><new_string>` + promptCDATA("bar") + `</new_string></item></parameter>`
+	default:
+		return wrapParameter("path", promptCDATA("output.txt")) + "\n" + wrapParameter("content", promptCDATA("Hello world"))
+	}
+}
+
+func exampleInteractiveParams(name string) string {
+	switch strings.TrimSpace(name) {
+	case "Task":
+		return wrapParameter("description", promptCDATA("Investigate flaky tests")) + "\n" + wrapParameter("prompt", promptCDATA("Run targeted tests and summarize failures"))
+	default:
+		return wrapParameter("question", promptCDATA("Which approach do you prefer?")) + "\n" + `<parameter name="follow_up"><item><text>` + promptCDATA("Option A") + `</text></item><item><text>` + promptCDATA("Option B") + `</text></item></parameter>`
+	}
 }
 
 func matchAny(name string, candidates ...string) bool {
@@ -130,41 +176,6 @@ func matchAny(name string, candidates ...string) bool {
 		}
 	}
 	return false
-}
-
-func exampleReadParams(name string) string {
-	switch strings.TrimSpace(name) {
-	case "Read":
-		return `<file_path>` + promptCDATA("README.md") + `</file_path>`
-	case "Glob":
-		return `<pattern>` + promptCDATA("**/*.go") + `</pattern><path>` + promptCDATA(".") + `</path>`
-	default:
-		return `<path>` + promptCDATA("src/main.go") + `</path>`
-	}
-}
-
-func exampleWriteOrExecParams(name string) string {
-	switch strings.TrimSpace(name) {
-	case "Bash", "execute_command":
-		return `<command>` + promptCDATA("pwd") + `</command>`
-	case "exec_command":
-		return `<cmd>` + promptCDATA("pwd") + `</cmd>`
-	case "Edit":
-		return `<file_path>` + promptCDATA("README.md") + `</file_path><old_string>` + promptCDATA("foo") + `</old_string><new_string>` + promptCDATA("bar") + `</new_string>`
-	case "MultiEdit":
-		return `<file_path>` + promptCDATA("README.md") + `</file_path><edits><old_string>` + promptCDATA("foo") + `</old_string><new_string>` + promptCDATA("bar") + `</new_string></edits>`
-	default:
-		return `<path>` + promptCDATA("output.txt") + `</path><content>` + promptCDATA("Hello world") + `</content>`
-	}
-}
-
-func exampleInteractiveParams(name string) string {
-	switch strings.TrimSpace(name) {
-	case "Task":
-		return `<description>` + promptCDATA("Investigate flaky tests") + `</description><prompt>` + promptCDATA("Run targeted tests and summarize failures") + `</prompt>`
-	default:
-		return `<question>` + promptCDATA("Which approach do you prefer?") + `</question><follow_up><text>` + promptCDATA("Option A") + `</text></follow_up><follow_up><text>` + promptCDATA("Option B") + `</text></follow_up>`
-	}
 }
 
 func promptCDATA(text string) string {

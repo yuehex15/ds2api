@@ -74,12 +74,7 @@ func filterToolCallsDetailed(parsed []ParsedToolCall) ([]ParsedToolCall, []strin
 
 func looksLikeToolCallSyntax(text string) bool {
 	lower := strings.ToLower(text)
-	return strings.Contains(lower, "<tools") ||
-		strings.Contains(lower, "<tool_call") ||
-		strings.Contains(lower, "<attempt_completion") ||
-		strings.Contains(lower, "<ask_followup_question") ||
-		strings.Contains(lower, "<new_task") ||
-		strings.Contains(lower, "<result")
+	return strings.Contains(lower, "<tool_calls")
 }
 
 func stripFencedCodeBlocks(text string) string {

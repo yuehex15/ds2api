@@ -37,7 +37,7 @@
 
 - OpenAI / Claude / Gemini 三套协议已统一挂在同一 `chi` 路由树上，由 `internal/server/router.go` 负责装配。
 - 适配器层职责收敛为：**请求归一化 → DeepSeek 调用 → 协议形态渲染**，减少历史版本中“同能力多处实现”的分叉。
-- Tool Calling 的解析策略在 Go 与 Node Runtime 间保持一致：当前以 XML/Markup 家族解析为主（含 `<tool_call>` / `<function_call>` / `<invoke>` / `tool_use` / antml 变体），并在流式场景执行防泄漏筛分。
+- Tool Calling 的解析策略在 Go 与 Node Runtime 间保持一致：当前唯一可执行的模型输出语法是 canonical XML 工具块 `<tool_calls>` → `<invoke name="...">` → `<parameter name="...">`，并在流式场景执行防泄漏筛分。
 - `Admin API` 将配置与运行时策略分开：`/admin/config*` 管静态配置，`/admin/settings*` 管运行时行为。
 
 ---
@@ -333,7 +333,7 @@ data: [DONE]
 补充说明：
 
 - **非代码块上下文**下，工具负载即使与普通文本混合，也会按特征识别并产出可执行 tool call（前后普通文本仍可透传）。
-- 解析器当前走 XML/Markup 家族（包含 `<tool_call>`、`<function_call>`、`<invoke>`、`tool_use`、antml 风格）；纯 JSON `tool_calls` 片段默认不会直接作为可执行调用解析。
+- 解析器当前只把 canonical XML 工具块（`<tool_calls>` / `<invoke name="...">` / `<parameter name="...">`）作为可执行调用解析；旧式 `<tools>`、`<tool_call>`、`<tool_name>`、`<param>`、`<function_call>`、`tool_use`、antml 风格与纯 JSON `tool_calls` 片段默认都会按普通文本处理。
 - Markdown fenced code block（例如 ```json ... ```）中的 `tool_calls` 仅视为示例文本，不会被执行。
 
 ---

@@ -16,8 +16,8 @@ func TestFormatOpenAIToolCalls(t *testing.T) {
 	}
 }
 
-func TestParseToolCallsSupportsToolsWrapper(t *testing.T) {
-	text := `<tools><tool_call><tool_name>Bash</tool_name><param><command>pwd</command><description>show cwd</description></param></tool_call></tools>`
+func TestParseToolCallsSupportsToolCallsWrapper(t *testing.T) {
+	text := `<tool_calls><invoke name="Bash"><parameter name="command">pwd</parameter><parameter name="description">show cwd</parameter></invoke></tool_calls>`
 	calls := ParseToolCalls(text, []string{"bash"})
 	if len(calls) != 1 {
 		t.Fatalf("expected 1 call, got %#v", calls)
@@ -31,9 +31,9 @@ func TestParseToolCallsSupportsToolsWrapper(t *testing.T) {
 }
 
 func TestParseToolCallsSupportsStandaloneToolWithMultilineCDATAAndRepeatedXMLTags(t *testing.T) {
-	text := `<tools><tool_call><tool_name>write_file</tool_name><param><path>script.sh</path><content><![CDATA[#!/bin/bash
+	text := `<tool_calls><invoke name="write_file"><parameter name="path">script.sh</parameter><parameter name="content"><![CDATA[#!/bin/bash
 echo "hello"
-]]></content><item>first</item><item>second</item></param></tool_call></tools>`
+]]></parameter><parameter name="item">first</parameter><parameter name="item">second</parameter></invoke></tool_calls>`
 	calls := ParseToolCalls(text, []string{"write_file"})
 	if len(calls) != 1 {
 		t.Fatalf("expected 1 call, got %#v", calls)
@@ -54,8 +54,8 @@ echo "hello"
 	}
 }
 
-func TestParseToolCallsSupportsCanonicalParamsJSON(t *testing.T) {
-	text := `<tools><tool_call><tool_name>get_weather</tool_name><param>{"city":"beijing","unit":"c"}</param></tool_call></tools>`
+func TestParseToolCallsSupportsInvokeParameters(t *testing.T) {
+	text := `<tool_calls><invoke name="get_weather"><parameter name="city">beijing</parameter><parameter name="unit">c</parameter></invoke></tool_calls>`
 	calls := ParseToolCalls(text, []string{"get_weather"})
 	if len(calls) != 1 {
 		t.Fatalf("expected 1 call, got %#v", calls)
@@ -69,7 +69,7 @@ func TestParseToolCallsSupportsCanonicalParamsJSON(t *testing.T) {
 }
 
 func TestParseToolCallsPreservesRawMalformedParams(t *testing.T) {
-	text := `<tools><tool_call><tool_name>execute_command</tool_name><param>cd /root && git status</param></tool_call></tools>`
+	text := `<tool_calls><invoke name="execute_command"><parameter name="command">cd /root && git status</parameter></invoke></tool_calls>`
 	calls := ParseToolCalls(text, []string{"execute_command"})
 	if len(calls) != 1 {
 		t.Fatalf("expected 1 call, got %#v", calls)
@@ -77,9 +77,9 @@ func TestParseToolCallsPreservesRawMalformedParams(t *testing.T) {
 	if calls[0].Name != "execute_command" {
 		t.Fatalf("expected tool name execute_command, got %q", calls[0].Name)
 	}
-	raw, ok := calls[0].Input["_raw"].(string)
+	raw, ok := calls[0].Input["command"].(string)
 	if !ok {
-		t.Fatalf("expected raw argument tracking, got %#v", calls[0].Input)
+		t.Fatalf("expected raw command tracking, got %#v", calls[0].Input)
 	}
 	if raw != "cd /root && git status" {
 		t.Fatalf("expected raw arguments to be preserved, got %q", raw)
@@ -87,7 +87,7 @@ func TestParseToolCallsPreservesRawMalformedParams(t *testing.T) {
 }
 
 func TestParseToolCallsSupportsParamsJSONWithAmpersandCommand(t *testing.T) {
-	text := `<tools><tool_call><tool_name>execute_command</tool_name><param>{"command":"sshpass -p 'xxx' ssh -o StrictHostKeyChecking=no -p 1111 root@111.111.111.111 'cd /root && git clone https://github.com/ericc-ch/copilot-api.git'","cwd":null,"timeout":null}</param></tool_call></tools>`
+	text := `<tool_calls><invoke name="execute_command"><parameter name="command">sshpass -p 'xxx' ssh -o StrictHostKeyChecking=no -p 1111 root@111.111.111.111 'cd /root && git clone https://github.com/ericc-ch/copilot-api.git'</parameter><parameter name="cwd"></parameter><parameter name="timeout"></parameter></invoke></tool_calls>`
 	calls := ParseToolCalls(text, []string{"execute_command"})
 	if len(calls) != 1 {
 		t.Fatalf("expected 1 call, got %#v", calls)
@@ -102,7 +102,7 @@ func TestParseToolCallsSupportsParamsJSONWithAmpersandCommand(t *testing.T) {
 }
 
 func TestParseToolCallsDoesNotTreatParamsNameTagAsToolName(t *testing.T) {
-	text := `<tools><tool_call><tool_name>execute_command</tool_name><param><tool_name>file.txt</tool_name><command>pwd</command></param></tool_call></tools>`
+	text := `<tool_calls><invoke name="execute_command"><parameter name="tool_name">file.txt</parameter><parameter name="command">pwd</parameter></invoke></tool_calls>`
 	calls := ParseToolCalls(text, []string{"execute_command"})
 	if len(calls) != 1 {
 		t.Fatalf("expected 1 call, got %#v", calls)
@@ -115,8 +115,8 @@ func TestParseToolCallsDoesNotTreatParamsNameTagAsToolName(t *testing.T) {
 	}
 }
 
-func TestParseToolCallsDetailedMarksToolsSyntax(t *testing.T) {
-	text := `<tools><tool_call><tool_name>Bash</tool_name><param><command>pwd</command></param></tool_call></tools>`
+func TestParseToolCallsDetailedMarksToolCallsSyntax(t *testing.T) {
+	text := `<tool_calls><invoke name="Bash"><parameter name="command">pwd</parameter></invoke></tool_calls>`
 	res := ParseToolCallsDetailed(text, []string{"bash"})
 	if !res.SawToolCallSyntax {
 		t.Fatalf("expected SawToolCallSyntax=true, got %#v", res)
@@ -127,7 +127,7 @@ func TestParseToolCallsDetailedMarksToolsSyntax(t *testing.T) {
 }
 
 func TestParseToolCallsSupportsInlineJSONToolObject(t *testing.T) {
-	text := `<tools><tool_call>{"name":"Bash","input":{"command":"pwd","description":"show cwd"}}</tool_call></tools>`
+	text := `<tool_calls><invoke name="Bash">{"input":{"command":"pwd","description":"show cwd"}}</invoke></tool_calls>`
 	calls := ParseToolCalls(text, []string{"bash"})
 	if len(calls) != 1 {
 		t.Fatalf("expected 1 call, got %#v", calls)
@@ -141,7 +141,7 @@ func TestParseToolCallsSupportsInlineJSONToolObject(t *testing.T) {
 }
 
 func TestParseToolCallsDoesNotAcceptMismatchedMarkupTags(t *testing.T) {
-	text := `<tools><tool_call><tool_name>read_file</function><param>{"path":"README.md"}</param></tool_call></tools>`
+	text := `<tool_calls><invoke name="read_file"><parameter name="path">README.md</function></invoke></tool_calls>`
 	calls := ParseToolCalls(text, []string{"read_file"})
 	if len(calls) != 0 {
 		t.Fatalf("expected mismatched tags to be rejected, got %#v", calls)
@@ -149,26 +149,37 @@ func TestParseToolCallsDoesNotAcceptMismatchedMarkupTags(t *testing.T) {
 }
 
 func TestParseToolCallsDoesNotTreatNameInsideParamsAsToolName(t *testing.T) {
-	text := `<tools><tool_call><param><tool_name>data_only</tool_name><path>README.md</path></param></tool_call></tools>`
+	text := `<tool_calls><invoke><parameter name="path">README.md</parameter></invoke></tool_calls>`
 	calls := ParseToolCalls(text, []string{"read_file"})
 	if len(calls) != 0 {
 		t.Fatalf("expected no tool call when name appears only under params, got %#v", calls)
 	}
 }
 
-func TestParseToolCallsRejectsLegacyToolCallsRoot(t *testing.T) {
-	text := `<tool_calls><tool_call><tool_name>read_file</tool_name><param>{"path":"README.md"}</param></tool_call></tool_calls>`
+func TestParseToolCallsRejectsLegacyToolsWrapper(t *testing.T) {
+	text := `<tools><tool_call><tool_name>read_file</tool_name><param>{"path":"README.md"}</param></tool_call></tools>`
 	calls := ParseToolCalls(text, []string{"read_file"})
 	if len(calls) != 0 {
-		t.Fatalf("expected legacy tool_calls root to be rejected, got %#v", calls)
+		t.Fatalf("expected legacy tools wrapper to be rejected, got %#v", calls)
 	}
 }
 
-func TestParseToolCallsRejectsLegacyParametersTag(t *testing.T) {
-	text := `<tools><tool_call><tool_name>read_file</tool_name><parameters>{"path":"README.md"}</parameters></tool_call></tools>`
+func TestParseToolCallsRejectsBareInvokeWithoutToolCallsWrapper(t *testing.T) {
+	text := `<invoke name="read_file"><parameter name="path">README.md</parameter></invoke>`
+	res := ParseToolCallsDetailed(text, []string{"read_file"})
+	if len(res.Calls) != 0 {
+		t.Fatalf("expected bare invoke to be rejected, got %#v", res.Calls)
+	}
+	if res.SawToolCallSyntax {
+		t.Fatalf("expected bare invoke to no longer count as supported syntax, got %#v", res)
+	}
+}
+
+func TestParseToolCallsRejectsLegacyCanonicalBody(t *testing.T) {
+	text := `<tool_calls><invoke name="read_file"><tool_name>read_file</tool_name><param>{"path":"README.md"}</param></invoke></tool_calls>`
 	calls := ParseToolCalls(text, []string{"read_file"})
 	if len(calls) != 0 {
-		t.Fatalf("expected legacy parameters tag to be rejected, got %#v", calls)
+		t.Fatalf("expected legacy canonical body to be rejected, got %#v", calls)
 	}
 }
 
@@ -310,7 +321,7 @@ func TestRepairLooseJSONWithNestedObjects(t *testing.T) {
 }
 
 func TestParseToolCallsUnescapesHTMLEntityArguments(t *testing.T) {
-	text := `<tools><tool_call><tool_name>Bash</tool_name><param>{"command":"echo a &gt; out.txt"}</param></tool_call></tools>`
+	text := `<tool_calls><invoke name="Bash"><parameter name="command">echo a &gt; out.txt</parameter></invoke></tool_calls>`
 	calls := ParseToolCalls(text, []string{"bash"})
 	if len(calls) != 1 {
 		t.Fatalf("expected one call, got %#v", calls)
@@ -322,7 +333,7 @@ func TestParseToolCallsUnescapesHTMLEntityArguments(t *testing.T) {
 }
 
 func TestParseToolCallsIgnoresXMLInsideFencedCodeBlock(t *testing.T) {
-	text := "Here is an example:\n```xml\n<tools><tool_call><tool_name>read_file</tool_name><param>{\"path\":\"README.md\"}</param></tool_call></tools>\n```\nDo not execute it."
+	text := "Here is an example:\n```xml\n<tool_calls><invoke name=\"read_file\"><parameter name=\"path\">README.md</parameter></invoke></tool_calls>\n```\nDo not execute it."
 	res := ParseToolCallsDetailed(text, []string{"read_file"})
 	if len(res.Calls) != 0 {
 		t.Fatalf("expected no parsed calls for fenced example, got %#v", res.Calls)
@@ -330,7 +341,7 @@ func TestParseToolCallsIgnoresXMLInsideFencedCodeBlock(t *testing.T) {
 }
 
 func TestParseToolCallsParsesOnlyNonFencedXMLToolCall(t *testing.T) {
-	text := "```xml\n<tools><tool_call><tool_name>read_file</tool_name><param>{\"path\":\"README.md\"}</param></tool_call></tools>\n```\n<tools><tool_call><tool_name>search</tool_name><param>{\"q\":\"golang\"}</param></tool_call></tools>"
+	text := "```xml\n<tool_calls><invoke name=\"read_file\"><parameter name=\"path\">README.md</parameter></invoke></tool_calls>\n```\n<tool_calls><invoke name=\"search\"><parameter name=\"q\">golang</parameter></invoke></tool_calls>"
 	res := ParseToolCallsDetailed(text, []string{"read_file", "search"})
 	if len(res.Calls) != 1 {
 		t.Fatalf("expected exactly one parsed call outside fence, got %#v", res.Calls)
@@ -341,7 +352,7 @@ func TestParseToolCallsParsesOnlyNonFencedXMLToolCall(t *testing.T) {
 }
 
 func TestParseToolCallsParsesAfterFourBacktickFence(t *testing.T) {
-	text := "````markdown\n```xml\n<tools><tool_call><tool_name>read_file</tool_name><param>{\"path\":\"README.md\"}</param></tool_call></tools>\n```\n````\n<tools><tool_call><tool_name>search</tool_name><param>{\"q\":\"outside\"}</param></tool_call></tools>"
+	text := "````markdown\n```xml\n<tool_calls><invoke name=\"read_file\"><parameter name=\"path\">README.md</parameter></invoke></tool_calls>\n```\n````\n<tool_calls><invoke name=\"search\"><parameter name=\"q\">outside</parameter></invoke></tool_calls>"
 	res := ParseToolCallsDetailed(text, []string{"read_file", "search"})
 	if len(res.Calls) != 1 {
 		t.Fatalf("expected exactly one parsed call outside four-backtick fence, got %#v", res.Calls)

@@ -1,6 +1,0 @@
-{
-  "text": "<tool><tool_name>get_weather</tool_name><param>{\"city\":\"beijing\",\"unit\":\"c\"}</param></tool>",
-  "tool_names": [
-    "get_weather"
-  ]
-}

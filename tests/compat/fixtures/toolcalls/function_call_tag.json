@@ -1,6 +1,0 @@
-{
-  "text": "<function_call><function>read_file</function><param>{\"path\":\"README.MD\"}</param></function_call>",
-  "tool_names": [
-    "read_file"
-  ]
-}

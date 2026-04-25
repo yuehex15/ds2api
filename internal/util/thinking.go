@@ -3,27 +3,48 @@ package util
 import "strings"
 
 func ResolveThinkingEnabled(req map[string]any, defaultEnabled bool) bool {
-	if enabled, ok := parseThinkingSetting(req["thinking"]); ok {
-		return enabled
-	}
-	if extraBody, ok := req["extra_body"].(map[string]any); ok {
-		if enabled, ok := parseThinkingSetting(extraBody["thinking"]); ok {
-			return enabled
-		}
-	}
-	if enabled, ok := parseReasoningEffort(req["reasoning_effort"]); ok {
+	if enabled, ok := ResolveThinkingOverride(req); ok {
 		return enabled
 	}
 	return defaultEnabled
 }
 
+func ResolveThinkingOverride(req map[string]any) (bool, bool) {
+	if req == nil {
+		return false, false
+	}
+	if enabled, ok := parseThinkingSetting(req["thinking"]); ok {
+		return enabled, true
+	}
+	if enabled, ok := parseReasoningSetting(req["reasoning"]); ok {
+		return enabled, true
+	}
+	if extraBody, ok := req["extra_body"].(map[string]any); ok {
+		if enabled, ok := parseThinkingSetting(extraBody["thinking"]); ok {
+			return enabled, true
+		}
+		if enabled, ok := parseReasoningSetting(extraBody["reasoning"]); ok {
+			return enabled, true
+		}
+		if enabled, ok := parseReasoningEffort(extraBody["reasoning_effort"]); ok {
+			return enabled, true
+		}
+	}
+	if enabled, ok := parseReasoningEffort(req["reasoning_effort"]); ok {
+		return enabled, true
+	}
+	return false, false
+}
+
 func parseThinkingSetting(raw any) (bool, bool) {
 	switch v := raw.(type) {
+	case bool:
+		return v, true
 	case string:
 		switch strings.ToLower(strings.TrimSpace(v)) {
-		case "enabled":
+		case "enabled", "enable", "on", "true":
 			return true, true
-		case "disabled":
+		case "disabled", "disable", "off", "false", "none":
 			return false, true
 		default:
 			return false, false
@@ -36,10 +57,28 @@ func parseThinkingSetting(raw any) (bool, bool) {
 	return false, false
 }
 
+func parseReasoningSetting(raw any) (bool, bool) {
+	switch v := raw.(type) {
+	case bool:
+		return v, true
+	case string:
+		return parseReasoningEffort(v)
+	case map[string]any:
+		for _, key := range []string{"effort", "type", "enabled"} {
+			if enabled, ok := parseReasoningSetting(v[key]); ok {
+				return enabled, true
+			}
+		}
+	}
+	return false, false
+}
+
 func parseReasoningEffort(raw any) (bool, bool) {
 	switch strings.ToLower(strings.TrimSpace(toString(raw))) {
-	case "low", "medium", "high", "xhigh":
+	case "minimal", "low", "medium", "high", "xhigh":
 		return true, true
+	case "none", "disabled", "disable", "off", "false":
+		return false, true
 	default:
 		return false, false
 	}

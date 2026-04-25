@@ -42,7 +42,7 @@ test('extractToolNames keeps only declared tool names (Go parity)', () => {
 });
 
 test('parseToolCalls parses XML markup tool call', () => {
-  const payload = '<tools><tool_call><tool_name>read_file</tool_name><param>{"path":"README.MD"}</param></tool_call></tools>';
+  const payload = '<tool_calls><invoke name="read_file"><parameter name="path">README.MD</parameter></invoke></tool_calls>';
   const calls = parseToolCalls(payload, ['read_file']);
   assert.equal(calls.length, 1);
   assert.equal(calls[0].name, 'read_file');
@@ -61,7 +61,7 @@ test('parseToolCalls ignores tool_call payloads that exist only inside fenced co
   const text = [
     'I will call a tool now.',
     '```xml',
-    '<tools><tool_call><tool_name>read_file</tool_name><param>{"path":"README.md"}</param></tool_call></tools>',
+    '<tool_calls><invoke name="read_file"><parameter name="path">README.md</parameter></invoke></tool_calls>',
     '```',
   ].join('\n');
   const calls = parseToolCalls(text, ['read_file']);
@@ -69,7 +69,7 @@ test('parseToolCalls ignores tool_call payloads that exist only inside fenced co
 });
 
 test('parseToolCalls keeps unknown schema names when toolNames is provided', () => {
-  const payload = '<tools><tool_call><tool_name>not_in_schema</tool_name><param>{"q":"go"}</param></tool_call></tools>';
+  const payload = '<tool_calls><invoke name="not_in_schema"><parameter name="q">go</parameter></invoke></tool_calls>';
   const calls = parseToolCalls(payload, ['search']);
   assert.equal(calls.length, 1);
   assert.equal(calls[0].name, 'not_in_schema');
@@ -77,7 +77,7 @@ test('parseToolCalls keeps unknown schema names when toolNames is provided', () 
 
 test('sieve emits tool_calls for XML tool call payload', () => {
   const events = runSieve(
-    ['<tools><tool_call><tool_name>read_file</tool_name><param>{"path":"README.MD"}</param></tool_call></tools>'],
+    ['<tool_calls><invoke name="read_file"><parameter name="path">README.MD</parameter></invoke></tool_calls>'],
     ['read_file'],
   );
   const finalCalls = events.filter((evt) => evt.type === 'tool_calls').flatMap((evt) => evt.calls || []);
@@ -88,8 +88,8 @@ test('sieve emits tool_calls for XML tool call payload', () => {
 test('sieve emits tool_calls when XML tag spans multiple chunks', () => {
   const events = runSieve(
     [
-      '<tools><tool_call><tool_name>read_file</tool_name>',
-      '<param>{"path":"README.MD"}</param></tool_call></tools>',
+      '<tool_calls><invoke name="read_file">',
+      '<parameter name="path">README.MD</parameter></invoke></tool_calls>',
     ],
     ['read_file'],
   );
@@ -103,10 +103,10 @@ test('sieve keeps long XML tool calls buffered until the closing tag arrives', (
   const splitAt = longContent.length / 2;
   const events = runSieve(
     [
-      '<tools>\n  <tool_call>\n    <tool_name>write_to_file</tool_name>\n    <param>\n      <content><![CDATA[',
+      '<tool_calls>\n  <invoke name="write_to_file">\n    <parameter name="content"><![CDATA[',
       longContent.slice(0, splitAt),
       longContent.slice(splitAt),
-      ']]></content>\n    </param>\n  </tool_call>\n</tools>',
+      ']]></parameter>\n  </invoke>\n</tool_calls>',
     ],
     ['write_to_file'],
   );
@@ -147,7 +147,16 @@ test('sieve keeps embedded invalid tool-like json as normal text to avoid stream
 });
 
 test('sieve passes malformed executable-looking XML through as text', () => {
-  const chunk = '<tools><tool_call><param>{"path":"README.MD"}</param></tool_call></tools>';
+  const chunk = '<tool_calls><invoke name="read_file"><param>{"path":"README.MD"}</param></invoke></tool_calls>';
+  const events = runSieve([chunk], ['read_file']);
+  const leakedText = collectText(events);
+  const hasToolCalls = events.some((evt) => evt.type === 'tool_calls' && evt.calls?.length > 0);
+  assert.equal(hasToolCalls, false);
+  assert.equal(leakedText, chunk);
+});
+
+test('sieve keeps bare tool_call XML as plain text without wrapper', () => {
+  const chunk = '<invoke name="read_file"><parameter name="path">README.MD</parameter></invoke>';
   const events = runSieve([chunk], ['read_file']);
   const leakedText = collectText(events);
   const hasToolCalls = events.some((evt) => evt.type === 'tool_calls' && evt.calls?.length > 0);
@@ -159,14 +168,13 @@ test('sieve flushes incomplete captured XML tool blocks by falling back to raw t
   const events = runSieve(
     [
       '前置正文G。',
-      '<tools>\n',
-      '  <tool_call>\n',
-      '    <tool_name>read_file</tool_name>\n',
+      '<tool_calls>\n',
+      '  <invoke name="read_file">\n',
     ],
     ['read_file'],
   );
   const leakedText = collectText(events);
-  const expected = ['前置正文G。', '<tools>\n', '  <tool_call>\n', '    <tool_name>read_file</tool_name>\n'].join('');
+  const expected = ['前置正文G。', '<tool_calls>\n', '  <invoke name="read_file">\n'].join('');
   const hasToolCalls = events.some((evt) => evt.type === 'tool_calls' && evt.calls?.length > 0);
   assert.equal(hasToolCalls, false);
   assert.equal(leakedText, expected);
@@ -176,7 +184,7 @@ test('sieve captures XML wrapper tags with attributes without leaking wrapper te
   const events = runSieve(
     [
       '前置正文H。',
-      '<tools id="x"><tool_call><tool_name>read_file</tool_name><param>{"path":"README.MD"}</param></tool_call></tools>',
+      '<tool_calls id="x"><invoke name="read_file"><parameter name="path">README.MD</parameter></invoke></tool_calls>',
       '后置正文I。',
     ],
     ['read_file'],
@@ -186,8 +194,8 @@ test('sieve captures XML wrapper tags with attributes without leaking wrapper te
   assert.equal(hasToolCall, true);
   assert.equal(leakedText.includes('前置正文H。'), true);
   assert.equal(leakedText.includes('后置正文I。'), true);
-  assert.equal(leakedText.includes('<tools id=\"x\">'), false);
-  assert.equal(leakedText.includes('</tools>'), false);
+  assert.equal(leakedText.includes('<tool_calls id=\"x\">'), false);
+  assert.equal(leakedText.includes('</tool_calls>'), false);
 });
 
 test('sieve keeps plain text intact in tool mode when no tool call appears', () => {
@@ -270,7 +278,7 @@ test('formatOpenAIStreamToolCalls reuses ids with the same idStore', () => {
 });
 
 test('parseToolCalls rejects mismatched markup tags', () => {
-  const payload = '<tools><tool_call><tool_name>read_file</function><param>{"path":"README.md"}</param></tool_call></tools>';
+  const payload = '<tool_calls><invoke name="read_file"><parameter name="path">README.md</function></invoke></tool_calls>';
   const calls = parseToolCalls(payload, ['read_file']);
   assert.equal(calls.length, 0);
 });

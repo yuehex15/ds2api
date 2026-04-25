@@ -9,42 +9,27 @@ import (
 // --- XML tool call support for the streaming sieve ---
 
 //nolint:unused // kept as explicit tag inventory for future XML sieve refinements.
-var xmlToolCallClosingTags = []string{"</tools>", "</tool_call>",
-	// Agent-style XML tags (Roo Code, Cline, etc.)
-	"</attempt_completion>", "</ask_followup_question>", "</new_task>", "</result>"}
-var xmlToolCallOpeningTags = []string{"<tools", "<tool_call",
-	// Agent-style XML tags
-	"<attempt_completion", "<ask_followup_question", "<new_task", "<result"}
+var xmlToolCallClosingTags = []string{"</tool_calls>"}
+var xmlToolCallOpeningTags = []string{"<tool_calls"}
 
 // xmlToolCallTagPairs maps each opening tag to its expected closing tag.
 // Order matters: longer/wrapper tags must be checked first.
 var xmlToolCallTagPairs = []struct{ open, close string }{
-	{"<tools", "</tools>"},
-	{"<tool_call", "</tool_call>"},
-	// Agent-style: these are XML "tool call" patterns from coding agents.
-	// They get captured → parsed. If parsing fails, the raw XML is preserved
-	// so the caller can still see the original text.
-	{"<attempt_completion", "</attempt_completion>"},
-	{"<ask_followup_question", "</ask_followup_question>"},
-	{"<new_task", "</new_task>"},
+	{"<tool_calls", "</tool_calls>"},
 }
 
-// xmlToolCallBlockPattern matches a complete XML tool call block (wrapper or standalone).
+// xmlToolCallBlockPattern matches a complete canonical XML tool call block.
 //
 //nolint:unused // reserved for future fast-path XML block detection.
-var xmlToolCallBlockPattern = regexp.MustCompile(`(?is)(<tools\b[^>]*>\s*(?:.*?)\s*</tools>|<tool_call\b[^>]*>(?:.*?)</tool_call>|<attempt_completion>(?:.*?)</attempt_completion>|<ask_followup_question>(?:.*?)</ask_followup_question>|<new_task>(?:.*?)</new_task>)`)
+var xmlToolCallBlockPattern = regexp.MustCompile(`(?is)(<tool_calls\b[^>]*>\s*(?:.*?)\s*</tool_calls>)`)
 
 // xmlToolTagsToDetect is the set of XML tag prefixes used by findToolSegmentStart.
-var xmlToolTagsToDetect = []string{"<tools>", "<tools\n", "<tools ", "<tool_call>", "<tool_call\n", "<tool_call ",
-	// Agent-style tags
-	"<attempt_completion>", "<ask_followup_question>", "<new_task>"}
+var xmlToolTagsToDetect = []string{"<tool_calls>", "<tool_calls\n", "<tool_calls "}
 
 // consumeXMLToolCapture tries to extract complete XML tool call blocks from captured text.
 func consumeXMLToolCapture(captured string, toolNames []string) (prefix string, calls []toolcall.ParsedToolCall, suffix string, ready bool) {
 	lower := strings.ToLower(captured)
-	// Find the FIRST matching open/close pair, preferring wrapper tags.
-	// Tag pairs are ordered longest-first (e.g. <tool_calls before <tool_call)
-	// so wrapper tags are checked before inner tags.
+	// Find the FIRST matching open/close pair for the canonical wrapper.
 	for _, pair := range xmlToolCallTagPairs {
 		openIdx := strings.Index(lower, pair.open)
 		if openIdx < 0 {
@@ -54,8 +39,7 @@ func consumeXMLToolCapture(captured string, toolNames []string) (prefix string, 
 		closeIdx := strings.LastIndex(lower, pair.close)
 		if closeIdx < openIdx {
 			// Opening tag is present but its specific closing tag hasn't arrived.
-			// Return not-ready so we keep buffering — do NOT fall through to
-			// try inner pairs (e.g. <tool_call inside <tool_calls).
+			// Return not-ready so we keep buffering until the canonical wrapper closes.
 			return "", nil, "", false
 		}
 		closeEnd := closeIdx + len(pair.close)
@@ -88,8 +72,8 @@ func hasOpenXMLToolTag(captured string) bool {
 	return false
 }
 
-// findPartialXMLToolTagStart checks if the string ends with a partial XML tool tag
-// (e.g., "<tool_ca" or "<inv") and returns the position of the '<'.
+// findPartialXMLToolTagStart checks if the string ends with a partial canonical
+// XML wrapper tag (e.g., "<too") and returns the position of the '<'.
 func findPartialXMLToolTagStart(s string) int {
 	lastLT := strings.LastIndex(s, "<")
 	if lastLT < 0 {

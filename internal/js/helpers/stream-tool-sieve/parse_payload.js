@@ -1,10 +1,11 @@
 'use strict';
 
-const TOOLS_WRAPPER_PATTERN = /<tools\b[^>]*>([\s\S]*?)<\/tools>/gi;
-const TOOL_CALL_MARKUP_BLOCK_PATTERN = /<(?:[a-z0-9_:-]+:)?tool_call\b[^>]*>([\s\S]*?)<\/(?:[a-z0-9_:-]+:)?tool_call>/gi;
-const TOOL_CALL_CANONICAL_BODY_PATTERN = /^\s*<(?:[a-z0-9_:-]+:)?tool_name\b[^>]*>([\s\S]*?)<\/(?:[a-z0-9_:-]+:)?tool_name>\s*<(?:[a-z0-9_:-]+:)?param\b[^>]*>([\s\S]*?)<\/(?:[a-z0-9_:-]+:)?param>\s*$/i;
+const TOOLS_WRAPPER_PATTERN = /<tool_calls\b[^>]*>([\s\S]*?)<\/tool_calls>/gi;
+const TOOL_CALL_MARKUP_BLOCK_PATTERN = /<(?:[a-z0-9_:-]+:)?invoke\b([^>]*)>([\s\S]*?)<\/(?:[a-z0-9_:-]+:)?invoke>/gi;
+const PARAMETER_BLOCK_PATTERN = /<(?:[a-z0-9_:-]+:)?parameter\b([^>]*)>([\s\S]*?)<\/(?:[a-z0-9_:-]+:)?parameter>/gi;
 const TOOL_CALL_MARKUP_KV_PATTERN = /<(?:[a-z0-9_:-]+:)?([a-z0-9_.-]+)\b[^>]*>([\s\S]*?)<\/(?:[a-z0-9_:-]+:)?\1>/gi;
 const CDATA_PATTERN = /^<!\[CDATA\[([\s\S]*?)]]>$/i;
+const XML_ATTR_PATTERN = /\b([a-z0-9_:-]+)\s*=\s*("([^"]*)"|'([^']*)')/gi;
 
 const {
   toStringSafe,
@@ -27,7 +28,7 @@ function parseMarkupToolCalls(text) {
   for (const wrapper of raw.matchAll(TOOLS_WRAPPER_PATTERN)) {
     const body = toStringSafe(wrapper[1]);
     for (const block of body.matchAll(TOOL_CALL_MARKUP_BLOCK_PATTERN)) {
-      const parsed = parseMarkupSingleToolCall(toStringSafe(block[1]).trim());
+      const parsed = parseMarkupSingleToolCall(block);
       if (parsed) {
         out.push(parsed);
       }
@@ -36,33 +37,43 @@ function parseMarkupToolCalls(text) {
   return out;
 }
 
-function parseMarkupSingleToolCall(inner) {
-  // Try inline JSON parse for the inner content.
+function parseMarkupSingleToolCall(block) {
+  const attrs = parseTagAttributes(block[1]);
+  const name = toStringSafe(attrs.name).trim();
+  if (!name) {
+    return null;
+  }
+  const inner = toStringSafe(block[2]).trim();
+
   if (inner) {
     try {
       const decoded = JSON.parse(inner);
-      if (decoded && typeof decoded === 'object' && !Array.isArray(decoded) && decoded.name) {
+      if (decoded && typeof decoded === 'object' && !Array.isArray(decoded)) {
         return {
-          name: toStringSafe(decoded.name),
-          input: decoded.input && typeof decoded.input === 'object' && !Array.isArray(decoded.input) ? decoded.input : {},
+          name,
+          input: decoded.input && typeof decoded.input === 'object' && !Array.isArray(decoded.input)
+            ? decoded.input
+            : decoded.parameters && typeof decoded.parameters === 'object' && !Array.isArray(decoded.parameters)
+              ? decoded.parameters
+              : {},
         };
       }
     } catch (_err) {
       // Not JSON, continue with markup parsing.
     }
   }
-
-  const match = inner.match(TOOL_CALL_CANONICAL_BODY_PATTERN);
-  if (!match || match.length < 3) {
+  const input = {};
+  for (const match of inner.matchAll(PARAMETER_BLOCK_PATTERN)) {
+    const parameterAttrs = parseTagAttributes(match[1]);
+    const paramName = toStringSafe(parameterAttrs.name).trim();
+    if (!paramName) {
+      continue;
+    }
+    appendMarkupValue(input, paramName, parseMarkupValue(match[2]));
+  }
+  if (Object.keys(input).length === 0 && inner.trim() !== '') {
     return null;
   }
-
-  const name = extractRawTagValue(match[1]).trim();
-  if (!name) {
-    return null;
-  }
-
-  const input = parseMarkupInput(match[2]);
   return { name, input };
 }
 
@@ -124,11 +135,14 @@ function parseMarkupValue(raw) {
     }
   }
 
-  try {
-    return JSON.parse(s);
-  } catch (_err) {
-    return s;
+  if (s.startsWith('{') || s.startsWith('[')) {
+    try {
+      return JSON.parse(s);
+    } catch (_err) {
+      return s;
+    }
   }
+  return s;
 }
 
 function extractRawTagValue(inner) {
@@ -156,6 +170,22 @@ function unescapeHtml(safe) {
     .replace(/&quot;/g, '"')
     .replace(/&#039;/g, "'")
     .replace(/&#x27;/g, "'");
+}
+
+function parseTagAttributes(raw) {
+  const source = toStringSafe(raw);
+  const out = {};
+  if (!source) {
+    return out;
+  }
+  for (const match of source.matchAll(XML_ATTR_PATTERN)) {
+    const key = toStringSafe(match[1]).trim().toLowerCase();
+    if (!key) {
+      continue;
+    }
+    out[key] = match[3] || match[4] || '';
+  }
+  return out;
 }
 
 function parseToolCallInput(v) {
