@@ -1,0 +1,62 @@
+name: Sync Fork Automatically
+
+on:
+  schedule:
+    - cron: '0 20 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout fork
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Detect upstream repository
+        id: upstream
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+        run: |
+          response=$(curl -s \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            https://api.github.com/repos/$REPO)
+
+          upstream_url=$(echo "$response" | jq -r '.parent.clone_url')
+          upstream_branch=$(echo "$response" | jq -r '.parent.default_branch')
+
+          if [ "$upstream_url" = "null" ] || [ -z "$upstream_url" ]; then
+            echo "当前仓库没有检测到上游 parent，可能不是 GitHub fork。"
+            exit 1
+          fi
+
+          echo "upstream_url=$upstream_url" >> $GITHUB_OUTPUT
+          echo "upstream_branch=$upstream_branch" >> $GITHUB_OUTPUT
+
+          echo "检测到上游仓库: $upstream_url"
+          echo "检测到上游默认分支: $upstream_branch"
+
+      - name: Add upstream remote
+        run: |
+          git remote add upstream "${{ steps.upstream.outputs.upstream_url }}"
+          git remote -v
+
+      - name: Fetch upstream
+        run: git fetch upstream
+
+      - name: Sync current branch with upstream default branch
+        run: |
+          git checkout main
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git merge "upstream/${{ steps.upstream.outputs.upstream_branch }}" --no-edit
+
+      - name: Push changes
+        run: git push origin main
