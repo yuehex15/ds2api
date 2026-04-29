@@ -220,7 +220,8 @@ func (s *responsesStreamRuntime) emitFunctionCallDeltaEvents(deltas []toolstream
 }
 
 func (s *responsesStreamRuntime) emitFunctionCallDoneEvents(calls []toolcall.ParsedToolCall) {
-	for idx, tc := range calls {
+	normalizedCalls := toolcall.NormalizeParsedToolCallsForSchemas(calls, s.toolsRaw)
+	for idx, tc := range normalizedCalls {
 		if strings.TrimSpace(tc.Name) == "" {
 			continue
 		}

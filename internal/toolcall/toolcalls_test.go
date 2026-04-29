@@ -6,7 +6,7 @@ import (
 )
 
 func TestFormatOpenAIToolCalls(t *testing.T) {
-	formatted := FormatOpenAIToolCalls([]ParsedToolCall{{Name: "search", Input: map[string]any{"q": "x"}}})
+	formatted := FormatOpenAIToolCalls([]ParsedToolCall{{Name: "search", Input: map[string]any{"q": "x"}}}, nil)
 	if len(formatted) != 1 {
 		t.Fatalf("expected 1, got %d", len(formatted))
 	}

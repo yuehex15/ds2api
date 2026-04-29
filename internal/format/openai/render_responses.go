@@ -9,19 +9,19 @@ import (
 	"github.com/google/uuid"
 )
 
-func BuildResponseObject(responseID, model, finalPrompt, finalThinking, finalText string, toolNames []string) map[string]any {
+func BuildResponseObject(responseID, model, finalPrompt, finalThinking, finalText string, toolNames []string, toolsRaw any) map[string]any {
 	// Strict mode: only standalone, structured tool-call payloads are treated
 	// as executable tool calls.
 	detected := toolcall.ParseAssistantToolCallsDetailed(finalText, finalThinking, toolNames)
-	return BuildResponseObjectWithToolCalls(responseID, model, finalPrompt, finalThinking, finalText, detected.Calls)
+	return BuildResponseObjectWithToolCalls(responseID, model, finalPrompt, finalThinking, finalText, detected.Calls, toolsRaw)
 }
 
-func BuildResponseObjectWithToolCalls(responseID, model, finalPrompt, finalThinking, finalText string, detected []toolcall.ParsedToolCall) map[string]any {
+func BuildResponseObjectWithToolCalls(responseID, model, finalPrompt, finalThinking, finalText string, detected []toolcall.ParsedToolCall, toolsRaw any) map[string]any {
 	exposedOutputText := finalText
 	output := make([]any, 0, 2)
 	if len(detected) > 0 {
 		exposedOutputText = ""
-		output = append(output, toResponsesFunctionCallItems(detected)...)
+		output = append(output, toResponsesFunctionCallItems(detected, toolsRaw)...)
 	} else {
 		content := make([]any, 0, 2)
 		if finalThinking != "" {
@@ -74,12 +74,13 @@ func BuildResponseObjectFromItems(responseID, model, finalPrompt, finalThinking,
 	}
 }
 
-func toResponsesFunctionCallItems(toolCalls []toolcall.ParsedToolCall) []any {
+func toResponsesFunctionCallItems(toolCalls []toolcall.ParsedToolCall, toolsRaw any) []any {
 	if len(toolCalls) == 0 {
 		return nil
 	}
+	normalizedCalls := toolcall.NormalizeParsedToolCallsForSchemas(toolCalls, toolsRaw)
 	out := make([]any, 0, len(toolCalls))
-	for _, tc := range toolCalls {
+	for _, tc := range normalizedCalls {
 		if strings.TrimSpace(tc.Name) == "" {
 			continue
 		}
