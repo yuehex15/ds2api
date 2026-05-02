@@ -64,8 +64,8 @@ Use `config.json` as the single source of truth:
 
 Built-in GitHub Actions workflow: `.github/workflows/release-artifacts.yml`
 
-- **Trigger**: only on Release `published` (no build on normal push)
-- **Outputs**: multi-platform binary archives + `sha256sums.txt`
+- **Trigger**: by default only on Release `published`; you can also run it manually via `workflow_dispatch` and pass `release_tag` to rerun / backfill
+- **Outputs**: multi-platform binary archives, Linux Docker image export tarballs, and `sha256sums.txt`
 - **Container publishing**: GHCR only (`ghcr.io/cjackhwang/ds2api`)
 
 | Platform | Architecture | Format |
@@ -131,6 +131,7 @@ docker-compose logs -f
 
 The default `docker-compose.yml` directly uses `ghcr.io/cjackhwang/ds2api:latest` and maps host port `6011` to container port `5001`. If you want `5001` exposed directly, set `DS2API_HOST_PORT=5001` (or adjust the `ports` mapping).
 The compose template also defaults to `DS2API_CONFIG_PATH=/data/config.json` with `./config.json:/data/config.json` mounted, so deployments avoid read-only `/app` persistence issues by default.
+The image pre-creates `/data` and grants it to the non-root `ds2api` user. If you bind-mount a single host file, make sure `config.json` is readable/writable by the container user, for example with `chmod 644 config.json`; otherwise Linux UID/GID mismatches can still cause `open /data/config.json: permission denied`.
 Compatibility note: when `DS2API_CONFIG_PATH` is unset and runtime base dir is `/app`, newer versions prefer `/data/config.json`; if that file is missing but legacy `/app/config.json` exists, DS2API automatically falls back to the legacy path to avoid post-upgrade config loss.
 
 If you want a pinned version instead of `latest`, you can also pull a specific tag directly:
@@ -270,6 +271,7 @@ VERCEL_TEAM_ID=team_xxxxxxxxxxxx   # optional for personal accounts
 | `VERCEL_TOKEN` | Vercel sync token | — |
 | `VERCEL_PROJECT_ID` | Vercel project ID | — |
 | `VERCEL_TEAM_ID` | Vercel team ID | — |
+| `DS2API_CHAT_HISTORY_PATH` | Chat history storage path (must be set to `/tmp/chat_history.json` on Vercel, otherwise unavailable due to read-only filesystem) | `data/chat_history.json` |
 | `DS2API_VERCEL_PROTECTION_BYPASS` | Deployment protection bypass for internal Node→Go calls | — |
 
 ### 3.4 Vercel Architecture
@@ -359,6 +361,22 @@ If API responses return Vercel HTML `Authentication Required`:
 - **Option B**: Add `x-vercel-protection-bypass` header to requests
 - **Option C**: Set `VERCEL_AUTOMATION_BYPASS_SECRET` (or `DS2API_VERCEL_PROTECTION_BYPASS`) for internal Node→Go calls
 
+#### Chat History Unavailable (read-only file system)
+
+```text
+create chat history dir: mkdir /var/task/data: read-only file system
+```
+
+**Cause**: Vercel Serverless functions have a read-only filesystem (`/var/task`). Chat history fails because it cannot create directories there.
+
+**Fix**: Add the following in Vercel Project Settings → Environment Variables:
+
+```text
+DS2API_CHAT_HISTORY_PATH=/tmp/chat_history.json
+```
+
+`/tmp` is the only writable directory in Vercel Serverless. Data is ephemeral (not persisted across cold starts), but the feature works within a single instance lifetime.
+
 ### 3.6 Build Artifacts Not Committed
 
 - `static/admin` directory is not in Git
@@ -401,7 +419,7 @@ Or step by step:
 
 ```bash
 cd webui
-npm install
+npm ci
 npm run build
 # Output goes to static/admin/
 ```

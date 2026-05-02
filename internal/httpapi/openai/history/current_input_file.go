@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"ds2api/internal/auth"
+	"ds2api/internal/config"
 	dsclient "ds2api/internal/deepseek/client"
 	"ds2api/internal/httpapi/openai/shared"
 	"ds2api/internal/promptcompat"
@@ -35,11 +36,15 @@ func (s Service) ApplyCurrentInputFile(ctx context.Context, a *auth.RequestAuth,
 	if strings.TrimSpace(fileText) == "" {
 		return stdReq, errors.New("current user input file produced empty transcript")
 	}
-
+	modelType := "default"
+	if resolvedType, ok := config.GetModelType(stdReq.ResolvedModel); ok {
+		modelType = resolvedType
+	}
 	result, err := s.DS.UploadFile(ctx, a, dsclient.UploadFileRequest{
 		Filename:    currentInputFilename,
 		ContentType: currentInputContentType,
 		Purpose:     currentInputPurpose,
+		ModelType:   modelType,
 		Data:        []byte(fileText),
 	}, 3)
 	if err != nil {
@@ -62,6 +67,9 @@ func (s Service) ApplyCurrentInputFile(ctx context.Context, a *auth.RequestAuth,
 	stdReq.CurrentInputFileApplied = true
 	stdReq.RefFileIDs = prependUniqueRefFileID(stdReq.RefFileIDs, fileID)
 	stdReq.FinalPrompt, stdReq.ToolNames = promptcompat.BuildOpenAIPrompt(messages, stdReq.ToolsRaw, "", stdReq.ToolChoice, stdReq.Thinking)
+	// Token accounting must reflect the actual downstream context:
+	// the uploaded DS2API_HISTORY.txt file content + the continuation live prompt.
+	stdReq.PromptTokenText = fileText + "\n" + stdReq.FinalPrompt
 	return stdReq, nil
 }
 
@@ -85,5 +93,5 @@ func latestUserInputForFile(messages []any) (int, string) {
 }
 
 func currentInputFilePrompt() string {
-	return "The current request and prior conversation context have already been provided. Answer the latest user request directly."
+	return "Continue from the latest state in the attached DS2API_HISTORY.txt context. Treat it as the current working state and answer the latest user request directly."
 }

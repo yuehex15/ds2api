@@ -33,6 +33,8 @@ Docs: [Overview](README.en.md) / [Architecture](docs/ARCHITECTURE.en.md) / [Depl
 | Health probes | `GET /healthz`, `GET /readyz` |
 | CORS | Enabled (uniformly covers `/v1/*`, `/anthropic/*`, `/v1beta/models/*`, and `/admin/*`; echoes the browser `Origin` when present, otherwise `*`; default allow-list includes `Content-Type`, `Authorization`, `X-API-Key`, `X-Ds2-Target-Account`, `X-Ds2-Source`, `X-Vercel-Protection-Bypass`, `X-Goog-Api-Key`, `Anthropic-Version`, `Anthropic-Beta`, and also accepts third-party preflight-requested headers such as `x-stainless-*`; `/v1/chat/completions` on Vercel Node Runtime matches the same behavior; internal-only `X-Ds2-Internal-Token` remains blocked) |
 
+- All JSON request bodies must be valid UTF-8; malformed byte sequences are rejected on ingress with `400 invalid json`.
+
 ### 3.0 Adapter-Layer Notes
 
 - OpenAI / Claude / Gemini protocols are now mounted on one shared `chi` router tree assembled in `internal/server/router.go`.
@@ -81,7 +83,7 @@ Two header formats accepted:
 - Token is in `config.keys` → **Managed account mode**: DS2API auto-selects an account via rotation
 - Token is not in `config.keys` → **Direct token mode**: treated as a DeepSeek token directly
 
-**Optional header**: `X-Ds2-Target-Account: <email_or_mobile>` — Pin a specific managed account.
+**Optional header**: `X-Ds2-Target-Account: <email_or_mobile>` — Pin a specific managed account; if the target account does not exist or the managed-account queue is exhausted, the request returns `429`, and current responses do not include `Retry-After`. If the account exists but login/refresh fails, the request returns the underlying `401` or upstream error.
 Gemini-compatible clients can also send `x-goog-api-key`, `?key=`, or `?api_key=` as the caller credential source.
 
 ### Admin Endpoints (`/admin/*`)
@@ -165,6 +167,8 @@ Gemini-compatible clients can also send `x-goog-api-key`, `?key=`, or `?api_key=
 | PUT | `/admin/chat-history/settings` | Admin | Update conversation history retention limit |
 | GET | `/admin/version` | Admin | Check current version and latest Release |
 
+OpenAI `/v1/*` paths are canonical. For clients configured with the bare DS2API service URL, the same OpenAI handlers are also exposed through root shortcuts: `/models`, `/models/{id}`, `/chat/completions`, `/responses`, `/responses/{response_id}`, `/embeddings`, and `/files`.
+
 ---
 
 ## Health Endpoints
@@ -196,10 +200,15 @@ No auth required. Returns the currently supported DeepSeek native model list.
   "object": "list",
   "data": [
     {"id": "deepseek-v4-flash", "object": "model", "created": 1677610602, "owned_by": "deepseek", "permission": []},
+    {"id": "deepseek-v4-flash-nothinking", "object": "model", "created": 1677610602, "owned_by": "deepseek", "permission": []},
     {"id": "deepseek-v4-pro", "object": "model", "created": 1677610602, "owned_by": "deepseek", "permission": []},
+    {"id": "deepseek-v4-pro-nothinking", "object": "model", "created": 1677610602, "owned_by": "deepseek", "permission": []},
     {"id": "deepseek-v4-flash-search", "object": "model", "created": 1677610602, "owned_by": "deepseek", "permission": []},
+    {"id": "deepseek-v4-flash-search-nothinking", "object": "model", "created": 1677610602, "owned_by": "deepseek", "permission": []},
     {"id": "deepseek-v4-pro-search", "object": "model", "created": 1677610602, "owned_by": "deepseek", "permission": []},
-    {"id": "deepseek-v4-vision", "object": "model", "created": 1677610602, "owned_by": "deepseek", "permission": []}
+    {"id": "deepseek-v4-pro-search-nothinking", "object": "model", "created": 1677610602, "owned_by": "deepseek", "permission": []},
+    {"id": "deepseek-v4-vision", "object": "model", "created": 1677610602, "owned_by": "deepseek", "permission": []},
+    {"id": "deepseek-v4-vision-nothinking", "object": "model", "created": 1677610602, "owned_by": "deepseek", "permission": []}
   ]
 }
 ```
@@ -298,7 +307,7 @@ data: [DONE]
 - When thinking is enabled, the stream may emit `delta.reasoning_content`
 - Text emits `delta.content`
 - Last chunk includes `finish_reason` and `usage`
-- Token counting prefers pass-through from upstream DeepSeek SSE (`accumulated_token_usage` / `token_usage`), and only falls back to local estimation when upstream usage is absent
+- Token counting prefers pass-through from upstream DeepSeek SSE (`accumulated_token_usage` / `token_usage`), and only falls back to local estimation when upstream usage is absent. Failed/interrupted endings (for example `response.failed`) may not include `usage`
 
 #### Tool Calls
 
@@ -414,7 +423,7 @@ Business auth required. Returns OpenAI-compatible embeddings shape.
 | `model` | string | ✅ | Supports native models + alias mapping |
 | `input` | string/array | ✅ | Supports string, string array, token array |
 
-> Requires `embeddings.provider`. Current supported values: `mock` / `deterministic` / `builtin`. If missing/unsupported, returns standard error shape with HTTP 501.
+> Requires `embeddings.provider`. Current supported values: `mock` / `deterministic` / `builtin` (all three use the same local deterministic implementation). If missing/unsupported, returns standard error shape with HTTP 501.
 
 ### `POST /v1/files`
 
@@ -428,7 +437,7 @@ Business auth required. OpenAI Files-compatible upload endpoint; currently only 
 Constraints and behavior:
 
 - `Content-Type` must be `multipart/form-data` (otherwise `400`).
-- Total request size limit is `100 MiB` (over-limit returns `413`).
+- Total request size limit is **100 MiB** (over-limit returns `413`).
 - Success returns an OpenAI `file` object (`id/object/bytes/filename/purpose/status`, etc.) and includes `account_id` for source-account tracing.
 
 ---
@@ -482,6 +491,13 @@ anthropic-version: 2023-06-01
 | `stream` | boolean | ❌ | Default `false` |
 | `system` | string | ❌ | Optional system prompt |
 | `tools` | array | ❌ | Claude tool schema |
+| `thinking` | object | ❌ | Anthropic thinking config; translated into downstream reasoning control, and ignored by `-nothinking` models |
+| `temperature` | number | ❌ | Passed through to the downstream bridge; if `temperature` and `top_p` are both present, `temperature` wins |
+| `top_p` | number | ❌ | Passed through when `temperature` is absent |
+| `stop_sequences` | array | ❌ | Passed through as downstream stop sequences |
+| `tool_choice` | string/object | ❌ | Supports `auto` / `none` / `required` / `{"type":"function","name":"..."}` and is translated to downstream tool choice |
+
+> Note: `thinking`, `temperature`, `top_p`, `stop_sequences`, and `tool_choice` are translated through the compatibility bridge. Final behavior still depends on the selected model and upstream support. When both `temperature` and `top_p` are present, `temperature` takes precedence.
 
 #### Non-Stream Response
 
@@ -1210,7 +1226,7 @@ Clients should handle HTTP status code plus `error` / `detail` fields.
 | Code | Meaning |
 | --- | --- |
 | `401` | Authentication failed (invalid key/token, or expired admin JWT) |
-| `429` | Too many requests (exceeded inflight + queue capacity) |
+| `429` | Too many requests (exceeded inflight + queue capacity; current responses do not include `Retry-After`) |
 | `503` | Model unavailable or upstream error |
 
 ---

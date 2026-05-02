@@ -3,12 +3,14 @@ package claude
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 
 	"ds2api/internal/config"
+	"ds2api/internal/httpapi/requestbody"
 	streamengine "ds2api/internal/stream"
 	"ds2api/internal/translatorcliproxy"
 	"ds2api/internal/util"
@@ -33,7 +35,11 @@ func (h *Handler) Messages(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) proxyViaOpenAI(w http.ResponseWriter, r *http.Request, store ConfigReader) bool {
 	raw, err := io.ReadAll(r.Body)
 	if err != nil {
-		writeClaudeError(w, http.StatusBadRequest, "invalid body")
+		if errors.Is(err, requestbody.ErrInvalidUTF8Body) {
+			writeClaudeError(w, http.StatusBadRequest, "invalid json")
+		} else {
+			writeClaudeError(w, http.StatusBadRequest, "invalid body")
+		}
 		return true
 	}
 	var req map[string]any
@@ -206,6 +212,7 @@ func (h *Handler) handleClaudeStreamRealtime(w http.ResponseWriter, r *http.Requ
 		h.compatStripReferenceMarkers(),
 		toolNames,
 		toolsRaw,
+		buildClaudePromptTokenText(messages, thinkingEnabled),
 	)
 	streamRuntime.sendMessageStart()
 

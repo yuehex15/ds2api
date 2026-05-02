@@ -64,8 +64,8 @@ cp config.example.json config.json
 
 仓库内置 GitHub Actions 工作流：`.github/workflows/release-artifacts.yml`
 
-- **触发条件**：仅在 Release `published` 时触发（普通 push 不会构建）
-- **构建产物**：多平台二进制压缩包 + `sha256sums.txt`
+- **触发条件**：默认仅在 Release `published` 时自动触发；也支持在 Actions 页面手动 `workflow_dispatch`，并填写 `release_tag` 复跑/补发
+- **构建产物**：多平台二进制压缩包、Linux Docker 镜像导出包 + `sha256sums.txt`
 - **容器镜像发布**：仅发布到 GHCR（`ghcr.io/cjackhwang/ds2api`）
 
 | 平台 | 架构 | 文件格式 |
@@ -131,6 +131,7 @@ docker-compose logs -f
 
 默认 `docker-compose.yml` 直接使用 `ghcr.io/cjackhwang/ds2api:latest`，并把宿主机 `6011` 映射到容器内的 `5001`。如果你希望直接对外暴露 `5001`，请设置 `DS2API_HOST_PORT=5001`（或者手动调整 `ports` 配置）。
 Compose 模板还会默认设置 `DS2API_CONFIG_PATH=/data/config.json` 并挂载 `./config.json:/data/config.json`，优先避免 `/app` 只读带来的配置持久化问题。
+镜像内会预创建 `/data` 并授权给非 root 的 `ds2api` 用户；如果你使用 bind mount 单文件，请确保宿主机 `config.json` 至少可被容器用户读取/写入，例如 `chmod 644 config.json`，否则 Linux UID/GID 不一致时仍可能出现 `open /data/config.json: permission denied`。
 兼容说明：若未设置 `DS2API_CONFIG_PATH` 且运行目录是 `/app`，新版本会优先使用 `/data/config.json`；当该文件不存在但检测到历史 `/app/config.json` 时，会自动回退读取旧路径，避免升级后“配置丢失”。
 
 如需固定版本，也可以直接拉取指定 tag：
@@ -270,6 +271,7 @@ VERCEL_TEAM_ID=team_xxxxxxxxxxxx   # 个人账号可留空
 | `VERCEL_TOKEN` | Vercel 同步 token | — |
 | `VERCEL_PROJECT_ID` | Vercel 项目 ID | — |
 | `VERCEL_TEAM_ID` | Vercel 团队 ID | — |
+| `DS2API_CHAT_HISTORY_PATH` | Chat history 存储路径（Vercel 上必须设为 `/tmp/chat_history.json`，否则因文件系统只读而不可用） | `data/chat_history.json` |
 | `DS2API_VERCEL_PROTECTION_BYPASS` | 部署保护绕过密钥（内部 Node→Go 调用） | — |
 
 ### 3.3 运行时行为配置（通过 Admin API 设置）
@@ -369,6 +371,22 @@ No Output Directory named "public" found after the Build completed.
 - **方案 B**：请求中添加 `x-vercel-protection-bypass` 头
 - **方案 C**：设置 `VERCEL_AUTOMATION_BYPASS_SECRET`（或 `DS2API_VERCEL_PROTECTION_BYPASS`），仅影响内部 Node→Go 调用
 
+#### Chat History 不可用（read-only file system）
+
+```text
+create chat history dir: mkdir /var/task/data: read-only file system
+```
+
+**原因**：Vercel Serverless 函数的文件系统（`/var/task`）为只读，chat history 尝试在该路径下创建目录失败。
+
+**解决**：在 Vercel Project Settings → Environment Variables 中添加：
+
+```text
+DS2API_CHAT_HISTORY_PATH=/tmp/chat_history.json
+```
+
+`/tmp` 是 Vercel Serverless 环境中唯一可写的目录。数据在函数冷启动之间不会持久化（ephemeral），但在单个实例生命周期内功能正常。
+
 ### 3.6 仓库不提交构建产物
 
 - `static/admin` 目录不在 Git 中
@@ -411,7 +429,7 @@ go run ./cmd/ds2api
 
 ```bash
 cd webui
-npm install
+npm ci
 npm run build
 # 产物输出到 static/admin/
 ```
