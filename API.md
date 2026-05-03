@@ -41,6 +41,8 @@
 - 适配器层职责收敛为：**请求归一化 → DeepSeek 调用 → 协议形态渲染**，减少历史版本中“同能力多处实现”的分叉。
 - Tool Calling 的解析策略在 Go 与 Node Runtime 间保持一致：推荐模型输出 DSML 外壳 `<|DSML|tool_calls>` → `<|DSML|invoke name="...">` → `<|DSML|parameter name="...">`；兼容层也接受 DSML wrapper 别名 `<dsml|tool_calls>`、`<|tool_calls>`、`<｜tool_calls>`、常见 DSML 分隔符漏写形态（如 `<|DSML tool_calls>`）、`DSML` 与工具标签名黏连的常见 typo（如 `<DSMLtool_calls>`），以及旧式 canonical XML `<tool_calls>` → `<invoke name="...">` → `<parameter name="...">`。实现上采用窄容错结构扫描：只有 `tool_calls` wrapper 或可修复的缺失 opening wrapper 会进入工具路径，裸 `<invoke>` 不计为已支持语法；流式场景继续执行防泄漏筛分。若参数体本身是合法 JSON 字面量（如 `123`、`true`、`null`、数组或对象），会按结构化值输出，不再一律当作字符串；若 CDATA 偶发漏闭合，则会在最终 parse / flush 恢复阶段做窄修复，尽量保住已完整包裹的外层工具调用。
 - `Admin API` 将配置与运行时策略分开：`/admin/config*` 管静态配置，`/admin/settings*` 管运行时行为。
+- 当上游返回 thinking-only 响应（模型输出了推理链但无可见文本）时，非流式补全会自动重试一次：以多轮对话 follow-up 方式追加 prompt 后缀 `"Previous reply had no visible output. Please regenerate the visible final answer or tool call now."` 并设置 `parent_message_id` 在同一 DeepSeek session 内让模型重新输出；重试最大 1 次。
+- 引用标记剥离（strip reference markers）当前为固定开启的运行时行为，所有协议适配层统一生效。
 
 ---
 
@@ -111,6 +113,7 @@ Gemini 兼容客户端还可以使用 `x-goog-api-key`、`?key=` 或 `?api_key=`
 | GET | `/v1/responses/{response_id}` | 业务 | 查询已生成 response（内存 TTL） |
 | POST | `/v1/embeddings` | 业务 | OpenAI Embeddings 接口 |
 | POST | `/v1/files` | 业务 | OpenAI Files 上传（multipart/form-data） |
+| GET | `/v1/files/{file_id}` | 业务 | 查询已上传文件状态 |
 | GET | `/anthropic/v1/models` | 无 | Claude 模型列表 |
 | POST | `/anthropic/v1/messages` | 业务 | Claude 消息接口 |
 | POST | `/anthropic/v1/messages/count_tokens` | 业务 | Claude token 计数 |
@@ -167,7 +170,7 @@ Gemini 兼容客户端还可以使用 `x-goog-api-key`、`?key=` 或 `?api_key=`
 | PUT | `/admin/chat-history/settings` | Admin | 更新对话记录保留条数 |
 | GET | `/admin/version` | Admin | 查询当前版本与最新 Release |
 
-OpenAI `/v1/*` 仍是规范路径。对于只配置 DS2API 根地址的客户端，同一套 OpenAI handler 也通过根路径快捷路由暴露：`/models`、`/models/{id}`、`/chat/completions`、`/responses`、`/responses/{response_id}`、`/embeddings`、`/files`。
+OpenAI `/v1/*` 仍是规范路径。对于只配置 DS2API 根地址的客户端，同一套 OpenAI handler 也通过根路径快捷路由暴露：`/models`、`/models/{id}`、`/chat/completions`、`/responses`、`/responses/{response_id}`、`/embeddings`、`/files`、`/files/{file_id}`。
 
 ---
 
@@ -443,6 +446,10 @@ data: [DONE]
 - 请求体总大小上限 **100 MiB**（超限返回 `413`）。
 - 成功返回 OpenAI `file` 对象（`id/object/bytes/filename/purpose/status` 等字段），并附带 `account_id` 便于定位来源账号。
 
+### `GET /v1/files/{file_id}`
+
+需要业务鉴权。查询 DeepSeek 上传文件的当前状态，并返回 OpenAI `file` 对象；未找到匹配文件时返回 `404`。
+
 ---
 
 ## Claude 兼容接口
@@ -556,7 +563,7 @@ data: {"type":"message_stop"}
 
 **说明**：
 
-- 默认模型会按各 surface 的既有规则输出 thinking / reasoning 相关增量
+- 默认支持 thinking 的模型会输出 `thinking` block / `thinking_delta`；请求显式关闭 thinking 或使用 `-nothinking` 模型时不会输出
 - 带 `-nothinking` 后缀的模型会强制关闭 thinking，即使请求显式传了 `thinking` / `reasoning` / `reasoning_effort` 也不会输出 `thinking_delta`
 - 不会输出 `signature_delta`（上游 DeepSeek 未提供可验证签名）
 - `tools` 场景优先避免泄露原始工具 JSON，不强制发送 `input_json_delta`
@@ -603,6 +610,7 @@ data: {"type":"message_stop"}
 响应为 Gemini 兼容结构，核心字段包括：
 
 - `candidates[].content.parts[].text`
+- `candidates[].content.parts[].thought=true`（thinking 输出）
 - `candidates[].content.parts[].functionCall`（工具调用时）
 - `usageMetadata`（`promptTokenCount` / `candidatesTokenCount` / `totalTokenCount`）
 
@@ -611,6 +619,7 @@ data: {"type":"message_stop"}
 返回 SSE（`text/event-stream`），每个 chunk 为一条 `data: <json>`：
 
 - 常规文本：持续返回增量文本 chunk
+- thinking：持续返回 `parts[].thought=true` 的增量 chunk
 - `tools` 场景：会缓冲并在结束时输出 `functionCall` 结构
 - 结束 chunk：包含 `finishReason: "STOP"` 与 `usageMetadata`
 - token 计数优先透传上游 DeepSeek SSE（如 `accumulated_token_usage` / `token_usage`）；仅在上游缺失时回退本地估算
@@ -733,7 +742,6 @@ data: {"type":"message_stop"}
 - `success`
 - `admin`（`has_password_hash`、`jwt_expire_hours`、`jwt_valid_after_unix`、`default_password_warning`）
 - `runtime`（`account_max_inflight`、`account_max_queue`、`global_max_inflight`、`token_refresh_interval_hours`）
-- `compat`（`wide_input_strict_output`、`strip_reference_markers`）
 - `responses` / `embeddings`
 - `auto_delete`（`mode`：`none` / `single` / `all`；旧配置 `sessions=true` 仍按 `all` 处理）
 - `current_input_file`（`enabled` 默认返回 `true`、`min_chars`）
@@ -747,13 +755,11 @@ data: {"type":"message_stop"}
 
 - `admin.jwt_expire_hours`
 - `runtime.account_max_inflight` / `runtime.account_max_queue` / `runtime.global_max_inflight` / `runtime.token_refresh_interval_hours`
-- `compat.wide_input_strict_output` / `compat.strip_reference_markers`
 - `responses.store_ttl_seconds`
 - `embeddings.provider`
 - `auto_delete.mode`
 - `current_input_file.enabled` / `current_input_file.min_chars`
 - `model_aliases`
-- `history_split` 仅作为旧配置兼容字段保留，不再影响请求处理
 - `toolcall` 策略已固定，不再作为可写入字段
 
 ### `POST /admin/settings/password`
@@ -777,9 +783,9 @@ data: {"type":"message_stop"}
 
 请求可直接传配置对象，或使用 `{"config": {...}, "mode":"merge"}` 包裹格式。
 也支持在查询参数里传 `?mode=merge` / `?mode=replace`。
-`replace` 模式会按完整配置结构替换（保留 Vercel 同步元信息）；`merge` 模式会合并 `keys`、`api_keys`、`accounts`、`model_aliases`，并覆盖 `admin`、`runtime`、`responses`、`embeddings` 中的非空字段。`compat`、`auto_delete`、`current_input_file` 建议通过 `/admin/settings` 或配置文件管理；`history_split` 仅保留为旧配置兼容字段；`toolcall` 相关字段会被忽略。
+`replace` 模式会按完整配置结构替换（保留 Vercel 同步元信息）；`merge` 模式会合并 `keys`、`api_keys`、`accounts`、`model_aliases`，并覆盖 `admin`、`runtime`、`responses`、`embeddings` 中的非空字段。`auto_delete`、`current_input_file` 建议通过 `/admin/settings` 或配置文件管理；`compat` 与 `toolcall` 相关字段会被忽略。
 
-> 注意：`merge` 模式不会更新 `compat`、`auto_delete`、`current_input_file`。
+> 注意：`merge` 模式不会更新 `auto_delete`、`current_input_file`。
 
 ### `GET /admin/config/export`
 

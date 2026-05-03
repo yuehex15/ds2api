@@ -1,13 +1,15 @@
 package claude
 
 import (
+	"ds2api/internal/assistantturn"
+	"ds2api/internal/sse"
 	"ds2api/internal/toolcall"
+	"ds2api/internal/toolstream"
 	"encoding/json"
 	"fmt"
 	"time"
 
 	streamengine "ds2api/internal/stream"
-	"ds2api/internal/util"
 )
 
 func (s *claudeStreamRuntime) closeThinkingBlock() {
@@ -34,6 +36,32 @@ func (s *claudeStreamRuntime) closeTextBlock() {
 	s.textBlockIndex = -1
 }
 
+func (s *claudeStreamRuntime) sendToolUseBlock(idx int, tc toolcall.ParsedToolCall) {
+	s.send("content_block_start", map[string]any{
+		"type":  "content_block_start",
+		"index": idx,
+		"content_block": map[string]any{
+			"type":  "tool_use",
+			"id":    fmt.Sprintf("toolu_%d_%d", time.Now().Unix(), idx),
+			"name":  tc.Name,
+			"input": map[string]any{},
+		},
+	})
+	inputBytes, _ := json.Marshal(tc.Input)
+	s.send("content_block_delta", map[string]any{
+		"type":  "content_block_delta",
+		"index": idx,
+		"delta": map[string]any{
+			"type":         "input_json_delta",
+			"partial_json": string(inputBytes),
+		},
+	})
+	s.send("content_block_stop", map[string]any{
+		"type":  "content_block_stop",
+		"index": idx,
+	})
+}
+
 func (s *claudeStreamRuntime) finalize(stopReason string) {
 	if s.ended {
 		return
@@ -41,49 +69,83 @@ func (s *claudeStreamRuntime) finalize(stopReason string) {
 	s.ended = true
 
 	s.closeThinkingBlock()
-	s.closeTextBlock()
-
-	finalThinking := s.thinking.String()
-	finalText := cleanVisibleOutput(s.text.String(), s.stripReferenceMarkers)
 
 	if s.bufferToolContent {
-		detected := toolcall.ParseStandaloneToolCalls(finalText, s.toolNames)
-		if len(detected) == 0 && finalText == "" && finalThinking != "" {
-			detected = toolcall.ParseStandaloneToolCalls(finalThinking, s.toolNames)
-		}
-		if len(detected) > 0 {
-			detected = toolcall.NormalizeParsedToolCallsForSchemas(detected, s.toolsRaw)
-			stopReason = "tool_use"
-			for i, tc := range detected {
-				idx := s.nextBlockIndex + i
-				s.send("content_block_start", map[string]any{
-					"type":  "content_block_start",
-					"index": idx,
-					"content_block": map[string]any{
-						"type":  "tool_use",
-						"id":    fmt.Sprintf("toolu_%d_%d", time.Now().Unix(), idx),
-						"name":  tc.Name,
-						"input": map[string]any{},
-					},
-				})
-
-				inputBytes, _ := json.Marshal(tc.Input)
+		for _, evt := range toolstream.Flush(&s.sieve, s.toolNames) {
+			if len(evt.ToolCalls) > 0 {
+				s.closeTextBlock()
+				s.toolCallsDetected = true
+				normalized := toolcall.NormalizeParsedToolCallsForSchemas(evt.ToolCalls, s.toolsRaw)
+				for _, tc := range normalized {
+					idx := s.nextBlockIndex
+					s.nextBlockIndex++
+					s.sendToolUseBlock(idx, tc)
+				}
+				continue
+			}
+			if evt.Content != "" {
+				cleaned := cleanVisibleOutput(evt.Content, s.stripReferenceMarkers)
+				if cleaned == "" || (s.searchEnabled && sse.IsCitation(cleaned)) {
+					continue
+				}
+				if !s.textBlockOpen {
+					s.textBlockIndex = s.nextBlockIndex
+					s.nextBlockIndex++
+					s.send("content_block_start", map[string]any{
+						"type":  "content_block_start",
+						"index": s.textBlockIndex,
+						"content_block": map[string]any{
+							"type": "text",
+							"text": "",
+						},
+					})
+					s.textBlockOpen = true
+				}
 				s.send("content_block_delta", map[string]any{
 					"type":  "content_block_delta",
-					"index": idx,
+					"index": s.textBlockIndex,
 					"delta": map[string]any{
-						"type":         "input_json_delta",
-						"partial_json": string(inputBytes),
+						"type": "text_delta",
+						"text": cleaned,
 					},
 				})
-
-				s.send("content_block_stop", map[string]any{
-					"type":  "content_block_stop",
-					"index": idx,
-				})
+				s.textEmitted = true
 			}
-			s.nextBlockIndex += len(detected)
-		} else if finalText != "" {
+		}
+	}
+
+	s.closeTextBlock()
+
+	turn := assistantturn.BuildTurnFromStreamSnapshot(assistantturn.StreamSnapshot{
+		RawText:               s.rawText.String(),
+		VisibleText:           s.text.String(),
+		RawThinking:           s.rawThinking.String(),
+		VisibleThinking:       s.thinking.String(),
+		DetectionThinking:     s.toolDetectionThinking.String(),
+		AlreadyEmittedCalls:   s.toolCallsDetected,
+		AlreadyEmittedToolRaw: s.toolCallsDetected,
+	}, assistantturn.BuildOptions{
+		Model:                 s.model,
+		Prompt:                s.promptTokenText,
+		SearchEnabled:         s.searchEnabled,
+		StripReferenceMarkers: s.stripReferenceMarkers,
+		ToolNames:             s.toolNames,
+		ToolsRaw:              s.toolsRaw,
+	})
+	finalText := turn.Text
+	outcome := assistantturn.FinalizeTurn(turn, assistantturn.FinalizeOptions{
+		AlreadyEmittedToolCalls: s.toolCallsDetected,
+	})
+
+	if s.bufferToolContent && !s.toolCallsDetected {
+		if len(turn.ToolCalls) > 0 {
+			stopReason = "tool_use"
+			for _, tc := range turn.ToolCalls {
+				idx := s.nextBlockIndex
+				s.nextBlockIndex++
+				s.sendToolUseBlock(idx, tc)
+			}
+		} else if finalText != "" && !s.textEmitted {
 			idx := s.nextBlockIndex
 			s.nextBlockIndex++
 			s.send("content_block_start", map[string]any{
@@ -102,6 +164,7 @@ func (s *claudeStreamRuntime) finalize(stopReason string) {
 					"text": finalText,
 				},
 			})
+			s.textEmitted = true
 			s.send("content_block_stop", map[string]any{
 				"type":  "content_block_stop",
 				"index": idx,
@@ -109,7 +172,10 @@ func (s *claudeStreamRuntime) finalize(stopReason string) {
 		}
 	}
 
-	outputTokens := util.CountOutputTokens(finalThinking, s.model) + util.CountOutputTokens(finalText, s.model)
+	if outcome.HasToolCalls {
+		stopReason = "tool_use"
+	}
+
 	s.send("message_delta", map[string]any{
 		"type": "message_delta",
 		"delta": map[string]any{
@@ -117,7 +183,7 @@ func (s *claudeStreamRuntime) finalize(stopReason string) {
 			"stop_sequence": nil,
 		},
 		"usage": map[string]any{
-			"output_tokens": outputTokens,
+			"output_tokens": outcome.Usage.OutputTokens,
 		},
 	})
 	s.send("message_stop", map[string]any{"type": "message_stop"})

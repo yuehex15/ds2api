@@ -4,13 +4,19 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"time"
 
+	"ds2api/internal/auth"
+	"ds2api/internal/completionruntime"
 	"ds2api/internal/config"
+	claudefmt "ds2api/internal/format/claude"
 	"ds2api/internal/httpapi/requestbody"
+	"ds2api/internal/promptcompat"
 	streamengine "ds2api/internal/stream"
 	"ds2api/internal/translatorcliproxy"
 	"ds2api/internal/util"
@@ -22,14 +28,89 @@ func (h *Handler) Messages(w http.ResponseWriter, r *http.Request) {
 	if strings.TrimSpace(r.Header.Get("anthropic-version")) == "" {
 		r.Header.Set("anthropic-version", "2023-06-01")
 	}
-	if h.OpenAI == nil {
-		writeClaudeError(w, http.StatusInternalServerError, "OpenAI proxy backend unavailable.")
+	if isClaudeVercelProxyRequest(r) && h.proxyViaOpenAI(w, r, h.Store) {
 		return
 	}
-	if h.proxyViaOpenAI(w, r, h.Store) {
+	if h.Auth == nil || h.DS == nil {
+		if h.OpenAI != nil && h.proxyViaOpenAI(w, r, h.Store) {
+			return
+		}
+		writeClaudeError(w, http.StatusInternalServerError, "Claude runtime backend unavailable.")
 		return
 	}
-	writeClaudeError(w, http.StatusBadGateway, "Failed to proxy Claude request.")
+	if h.handleClaudeDirect(w, r) {
+		return
+	}
+	writeClaudeError(w, http.StatusBadGateway, "Failed to handle Claude request.")
+}
+
+func isClaudeVercelProxyRequest(r *http.Request) bool {
+	if r == nil || r.URL == nil {
+		return false
+	}
+	return strings.TrimSpace(r.URL.Query().Get("__stream_prepare")) == "1" ||
+		strings.TrimSpace(r.URL.Query().Get("__stream_release")) == "1"
+}
+
+func (h *Handler) handleClaudeDirect(w http.ResponseWriter, r *http.Request) bool {
+	raw, err := io.ReadAll(r.Body)
+	if err != nil {
+		if errors.Is(err, requestbody.ErrInvalidUTF8Body) {
+			writeClaudeError(w, http.StatusBadRequest, "invalid json")
+		} else {
+			writeClaudeError(w, http.StatusBadRequest, "invalid body")
+		}
+		return true
+	}
+	var req map[string]any
+	if err := json.Unmarshal(raw, &req); err != nil {
+		writeClaudeError(w, http.StatusBadRequest, "invalid json")
+		return true
+	}
+	norm, err := normalizeClaudeRequest(h.Store, req)
+	if err != nil {
+		writeClaudeError(w, http.StatusBadRequest, err.Error())
+		return true
+	}
+	exposeThinking := norm.Standard.Thinking
+	a, err := h.Auth.Determine(r)
+	if err != nil {
+		writeClaudeError(w, http.StatusUnauthorized, err.Error())
+		return true
+	}
+	defer h.Auth.Release(a)
+	if norm.Standard.Stream {
+		h.handleClaudeDirectStream(w, r, a, norm.Standard)
+		return true
+	}
+	result, outErr := completionruntime.ExecuteNonStreamWithRetry(r.Context(), h.DS, a, norm.Standard, completionruntime.Options{
+		StripReferenceMarkers: stripReferenceMarkersEnabled(),
+		RetryEnabled:          true,
+		CurrentInputFile:      h.Store,
+	})
+	if outErr != nil {
+		writeClaudeError(w, outErr.Status, outErr.Message)
+		return true
+	}
+	writeJSON(w, http.StatusOK, claudefmt.BuildMessageResponseFromTurn(
+		fmt.Sprintf("msg_%d", time.Now().UnixNano()),
+		norm.Standard.ResponseModel,
+		result.Turn,
+		exposeThinking,
+	))
+	return true
+}
+
+func (h *Handler) handleClaudeDirectStream(w http.ResponseWriter, r *http.Request, a *auth.RequestAuth, stdReq promptcompat.StandardRequest) {
+	start, outErr := completionruntime.StartCompletion(r.Context(), h.DS, a, stdReq, completionruntime.Options{
+		CurrentInputFile: h.Store,
+	})
+	if outErr != nil {
+		writeClaudeError(w, outErr.Status, outErr.Message)
+		return
+	}
+	streamReq := start.Request
+	h.handleClaudeStreamRealtime(w, r, start.Response, streamReq.ResponseModel, streamReq.Messages, streamReq.Thinking, streamReq.Search, streamReq.ToolNames, streamReq.ToolsRaw)
 }
 
 func (h *Handler) proxyViaOpenAI(w http.ResponseWriter, r *http.Request, store ConfigReader) bool {
@@ -58,7 +139,7 @@ func (h *Handler) proxyViaOpenAI(w http.ResponseWriter, r *http.Request, store C
 		}
 	}
 	translatedReq := translatorcliproxy.ToOpenAI(sdktranslator.FormatClaude, translateModel, raw, stream)
-	translatedReq, exposeThinking := applyClaudeThinkingPolicyToOpenAIRequest(translatedReq, req, stream)
+	translatedReq, exposeThinking := applyClaudeThinkingPolicyToOpenAIRequest(translatedReq, req)
 
 	isVercelPrepare := strings.TrimSpace(r.URL.Query().Get("__stream_prepare")) == "1"
 	isVercelRelease := strings.TrimSpace(r.URL.Query().Get("__stream_release")) == "1"
@@ -133,7 +214,7 @@ func (h *Handler) proxyViaOpenAI(w http.ResponseWriter, r *http.Request, store C
 	return true
 }
 
-func applyClaudeThinkingPolicyToOpenAIRequest(translated []byte, original map[string]any, stream bool) ([]byte, bool) {
+func applyClaudeThinkingPolicyToOpenAIRequest(translated []byte, original map[string]any) ([]byte, bool) {
 	req := map[string]any{}
 	if err := json.Unmarshal(translated, &req); err != nil {
 		return translated, false
@@ -143,7 +224,7 @@ func applyClaudeThinkingPolicyToOpenAIRequest(translated []byte, original map[st
 		if _, translatedHasOverride := util.ResolveThinkingOverride(req); translatedHasOverride {
 			return translated, false
 		}
-		enabled = !stream
+		enabled = true
 	}
 	typ := "disabled"
 	if enabled {
@@ -152,9 +233,9 @@ func applyClaudeThinkingPolicyToOpenAIRequest(translated []byte, original map[st
 	req["thinking"] = map[string]any{"type": typ}
 	out, err := json.Marshal(req)
 	if err != nil {
-		return translated, ok && enabled
+		return translated, enabled
 	}
-	return out, ok && enabled
+	return out, enabled
 }
 
 func stripClaudeThinkingBlocks(raw []byte) []byte {
@@ -209,7 +290,7 @@ func (h *Handler) handleClaudeStreamRealtime(w http.ResponseWriter, r *http.Requ
 		messages,
 		thinkingEnabled,
 		searchEnabled,
-		h.compatStripReferenceMarkers(),
+		stripReferenceMarkersEnabled(),
 		toolNames,
 		toolsRaw,
 		buildClaudePromptTokenText(messages, thinkingEnabled),

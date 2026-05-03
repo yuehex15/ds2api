@@ -57,7 +57,7 @@ func blockChatHistoryDetailDir(t *testing.T, detailDir string) func() {
 func TestChatCompletionsNonStreamPersistsHistory(t *testing.T) {
 	historyStore := newTestChatHistoryStore(t)
 	h := &Handler{
-		Store:       mockOpenAIConfig{wideInput: true},
+		Store:       mockOpenAIConfig{},
 		Auth:        streamStatusAuthStub{},
 		DS:          streamStatusDSStub{resp: makeOpenAISSEHTTPResponse(`data: {"p":"response/content","v":"hello world"}`, `data: [DONE]`)},
 		ChatHistory: historyStore,
@@ -216,7 +216,7 @@ func TestHandleStreamContextCancelledMarksHistoryStopped(t *testing.T) {
 func TestChatCompletionsSkipsAdminWebUISource(t *testing.T) {
 	historyStore := newTestChatHistoryStore(t)
 	h := &Handler{
-		Store:       mockOpenAIConfig{wideInput: true},
+		Store:       mockOpenAIConfig{},
 		Auth:        streamStatusAuthStub{},
 		DS:          streamStatusDSStub{resp: makeOpenAISSEHTTPResponse(`data: {"p":"response/content","v":"hello world"}`, `data: [DONE]`)},
 		ChatHistory: historyStore,
@@ -248,7 +248,7 @@ func TestChatCompletionsSkipsHistoryWhenDisabled(t *testing.T) {
 		t.Fatalf("disable history store failed: %v", err)
 	}
 	h := &Handler{
-		Store:       mockOpenAIConfig{wideInput: true},
+		Store:       mockOpenAIConfig{},
 		Auth:        streamStatusAuthStub{},
 		DS:          streamStatusDSStub{resp: makeOpenAISSEHTTPResponse(`data: {"p":"response/content","v":"hello world"}`, `data: [DONE]`)},
 		ChatHistory: historyStore,
@@ -278,7 +278,6 @@ func TestChatCompletionsCurrentInputFilePersistsNeutralPrompt(t *testing.T) {
 	ds := &inlineUploadDSStub{}
 	h := &Handler{
 		Store: mockOpenAIConfig{
-			wideInput:           true,
 			currentInputEnabled: true,
 		},
 		Auth:        streamStatusAuthStub{},

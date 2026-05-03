@@ -68,7 +68,7 @@ gofmt -w <changed-go-files>
 3. 请求归一化：`internal/promptcompat` 或协议转换包。
 4. 上游请求：`internal/deepseek/client`。
 5. 流式输出：`internal/stream`、`internal/sse`、`internal/toolstream`。
-6. 响应格式：`internal/format/*` 或 `internal/translatorcliproxy`。
+6. 响应格式：主路径看 `internal/assistantturn` 与 `internal/format/*`；`internal/translatorcliproxy` 只用于 Vercel/fallback/test 桥接。
 
 对话记录页面问题优先检查：
 

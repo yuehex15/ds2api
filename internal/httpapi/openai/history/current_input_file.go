@@ -19,8 +19,22 @@ const (
 	currentInputPurpose     = "assistants"
 )
 
+type CurrentInputConfigReader interface {
+	CurrentInputFileEnabled() bool
+	CurrentInputFileMinChars() int
+}
+
+type CurrentInputUploader interface {
+	UploadFile(ctx context.Context, a *auth.RequestAuth, req dsclient.UploadFileRequest, maxAttempts int) (*dsclient.UploadFileResult, error)
+}
+
+type Service struct {
+	Store CurrentInputConfigReader
+	DS    CurrentInputUploader
+}
+
 func (s Service) ApplyCurrentInputFile(ctx context.Context, a *auth.RequestAuth, stdReq promptcompat.StandardRequest) (promptcompat.StandardRequest, error) {
-	if s.DS == nil || s.Store == nil || a == nil || !s.Store.CurrentInputFileEnabled() {
+	if stdReq.CurrentInputFileApplied || s.DS == nil || s.Store == nil || a == nil || !s.Store.CurrentInputFileEnabled() {
 		return stdReq, nil
 	}
 	threshold := s.Store.CurrentInputFileMinChars()
@@ -94,4 +108,21 @@ func latestUserInputForFile(messages []any) (int, string) {
 
 func currentInputFilePrompt() string {
 	return "Continue from the latest state in the attached DS2API_HISTORY.txt context. Treat it as the current working state and answer the latest user request directly."
+}
+
+func prependUniqueRefFileID(existing []string, fileID string) []string {
+	fileID = strings.TrimSpace(fileID)
+	if fileID == "" {
+		return existing
+	}
+	out := make([]string, 0, len(existing)+1)
+	out = append(out, fileID)
+	for _, id := range existing {
+		trimmed := strings.TrimSpace(id)
+		if trimmed == "" || strings.EqualFold(trimmed, fileID) {
+			continue
+		}
+		out = append(out, trimmed)
+	}
+	return out
 }

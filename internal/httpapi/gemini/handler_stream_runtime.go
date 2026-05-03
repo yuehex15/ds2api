@@ -7,13 +7,14 @@ import (
 	"strings"
 	"time"
 
+	"ds2api/internal/assistantturn"
 	dsprotocol "ds2api/internal/deepseek/protocol"
 	"ds2api/internal/sse"
 	streamengine "ds2api/internal/stream"
 )
 
 //nolint:unused // retained for native Gemini stream handling path.
-func (h *Handler) handleStreamGenerateContent(w http.ResponseWriter, r *http.Request, resp *http.Response, model, finalPrompt string, thinkingEnabled, searchEnabled bool, toolNames []string) {
+func (h *Handler) handleStreamGenerateContent(w http.ResponseWriter, r *http.Request, resp *http.Response, model, finalPrompt string, thinkingEnabled, searchEnabled bool, toolNames []string, toolsRaw any) {
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
@@ -28,7 +29,7 @@ func (h *Handler) handleStreamGenerateContent(w http.ResponseWriter, r *http.Req
 
 	rc := http.NewResponseController(w)
 	_, canFlush := w.(http.Flusher)
-	runtime := newGeminiStreamRuntime(w, rc, canFlush, model, finalPrompt, thinkingEnabled, searchEnabled, h.compatStripReferenceMarkers(), toolNames)
+	runtime := newGeminiStreamRuntime(w, rc, canFlush, model, finalPrompt, thinkingEnabled, searchEnabled, stripReferenceMarkersEnabled(), toolNames, toolsRaw)
 
 	initialType := "text"
 	if thinkingEnabled {
@@ -64,9 +65,11 @@ type geminiStreamRuntime struct {
 	bufferContent         bool
 	stripReferenceMarkers bool
 	toolNames             []string
+	toolsRaw              any
 
-	thinking strings.Builder
-	text     strings.Builder
+	accumulator       *assistantturn.Accumulator
+	contentFilter     bool
+	responseMessageID int
 }
 
 //nolint:unused // retained for native Gemini stream handling path.
@@ -80,6 +83,7 @@ func newGeminiStreamRuntime(
 	searchEnabled bool,
 	stripReferenceMarkers bool,
 	toolNames []string,
+	toolsRaw any,
 ) *geminiStreamRuntime {
 	return &geminiStreamRuntime{
 		w:                     w,
@@ -92,6 +96,12 @@ func newGeminiStreamRuntime(
 		bufferContent:         len(toolNames) > 0,
 		stripReferenceMarkers: stripReferenceMarkers,
 		toolNames:             toolNames,
+		toolsRaw:              toolsRaw,
+		accumulator: assistantturn.NewAccumulator(assistantturn.AccumulatorOptions{
+			ThinkingEnabled:       thinkingEnabled,
+			SearchEnabled:         searchEnabled,
+			StripReferenceMarkers: stripReferenceMarkers,
+		}),
 	}
 }
 
@@ -111,35 +121,39 @@ func (s *geminiStreamRuntime) onParsed(parsed sse.LineResult) streamengine.Parse
 	if !parsed.Parsed {
 		return streamengine.ParsedDecision{}
 	}
+	if parsed.ResponseMessageID > 0 {
+		s.responseMessageID = parsed.ResponseMessageID
+	}
 	if parsed.ContentFilter || parsed.ErrorMessage != "" || parsed.Stop {
+		if parsed.ContentFilter {
+			s.contentFilter = true
+		}
 		return streamengine.ParsedDecision{Stop: true}
 	}
 
-	contentSeen := false
-	for _, p := range parsed.Parts {
-		cleanedText := cleanVisibleOutput(p.Text, s.stripReferenceMarkers)
-		if cleanedText == "" {
-			continue
-		}
-		if p.Type != "thinking" && s.searchEnabled && sse.IsCitation(cleanedText) {
-			continue
-		}
-		contentSeen = true
+	accumulated := s.accumulator.Apply(parsed)
+	for _, p := range accumulated.Parts {
 		if p.Type == "thinking" {
-			if s.thinkingEnabled {
-				trimmed := sse.TrimContinuationOverlap(s.thinking.String(), cleanedText)
-				if trimmed == "" {
-					continue
-				}
-				s.thinking.WriteString(trimmed)
+			if p.VisibleText == "" || s.bufferContent {
+				continue
 			}
+			s.sendChunk(map[string]any{
+				"candidates": []map[string]any{
+					{
+						"index": 0,
+						"content": map[string]any{
+							"role":  "model",
+							"parts": []map[string]any{{"text": p.VisibleText, "thought": true}},
+						},
+					},
+				},
+				"modelVersion": s.model,
+			})
 			continue
 		}
-		trimmed := sse.TrimContinuationOverlap(s.text.String(), cleanedText)
-		if trimmed == "" {
+		if p.RawText == "" || p.CitationOnly || p.VisibleText == "" {
 			continue
 		}
-		s.text.WriteString(trimmed)
 		if s.bufferContent {
 			continue
 		}
@@ -149,23 +163,39 @@ func (s *geminiStreamRuntime) onParsed(parsed sse.LineResult) streamengine.Parse
 					"index": 0,
 					"content": map[string]any{
 						"role":  "model",
-						"parts": []map[string]any{{"text": trimmed}},
+						"parts": []map[string]any{{"text": p.VisibleText}},
 					},
 				},
 			},
 			"modelVersion": s.model,
 		})
 	}
-	return streamengine.ParsedDecision{ContentSeen: contentSeen}
+	return streamengine.ParsedDecision{ContentSeen: accumulated.ContentSeen}
 }
 
 //nolint:unused // retained for native Gemini stream handling path.
 func (s *geminiStreamRuntime) finalize() {
-	finalThinking := s.thinking.String()
-	finalText := cleanVisibleOutput(s.text.String(), s.stripReferenceMarkers)
+	rawText, text, rawThinking, thinking, detectionThinking := s.accumulator.Snapshot()
+	turn := assistantturn.BuildTurnFromStreamSnapshot(assistantturn.StreamSnapshot{
+		RawText:           rawText,
+		VisibleText:       text,
+		RawThinking:       rawThinking,
+		VisibleThinking:   thinking,
+		DetectionThinking: detectionThinking,
+		ContentFilter:     s.contentFilter,
+		ResponseMessageID: s.responseMessageID,
+	}, assistantturn.BuildOptions{
+		Model:                 s.model,
+		Prompt:                s.finalPrompt,
+		SearchEnabled:         s.searchEnabled,
+		StripReferenceMarkers: s.stripReferenceMarkers,
+		ToolNames:             s.toolNames,
+		ToolsRaw:              s.toolsRaw,
+	})
+	outcome := assistantturn.FinalizeTurn(turn, assistantturn.FinalizeOptions{})
 
 	if s.bufferContent {
-		parts := buildGeminiPartsFromFinal(finalText, finalThinking, s.toolNames)
+		parts := buildGeminiPartsFromTurn(turn)
 		s.sendChunk(map[string]any{
 			"candidates": []map[string]any{
 				{
@@ -193,7 +223,11 @@ func (s *geminiStreamRuntime) finalize() {
 				"finishReason": "STOP",
 			},
 		},
-		"modelVersion":  s.model,
-		"usageMetadata": buildGeminiUsage(s.model, s.finalPrompt, finalThinking, finalText),
+		"modelVersion": s.model,
+		"usageMetadata": map[string]any{
+			"promptTokenCount":     outcome.Usage.InputTokens,
+			"candidatesTokenCount": outcome.Usage.OutputTokens,
+			"totalTokenCount":      outcome.Usage.TotalTokens,
+		},
 	})
 }

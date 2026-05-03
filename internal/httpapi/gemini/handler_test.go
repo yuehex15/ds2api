@@ -13,12 +13,14 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"ds2api/internal/auth"
+	dsclient "ds2api/internal/deepseek/client"
 )
 
 type testGeminiConfig struct{}
 
-func (testGeminiConfig) ModelAliases() map[string]string   { return nil }
-func (testGeminiConfig) CompatStripReferenceMarkers() bool { return true }
+func (testGeminiConfig) ModelAliases() map[string]string { return nil }
+func (testGeminiConfig) CurrentInputFileEnabled() bool   { return true }
+func (testGeminiConfig) CurrentInputFileMinChars() int   { return 0 }
 
 type testGeminiAuth struct {
 	a   *auth.RequestAuth
@@ -44,22 +46,31 @@ func (testGeminiAuth) Release(_ *auth.RequestAuth) {}
 
 //nolint:unused // reserved test double for native Gemini DS-call path coverage.
 type testGeminiDS struct {
-	resp *http.Response
-	err  error
+	resp        *http.Response
+	err         error
+	uploadCalls []dsclient.UploadFileRequest
+	payloads    []map[string]any
 }
 
 //nolint:unused // reserved test double for native Gemini DS-call path coverage.
-func (m testGeminiDS) CreateSession(_ context.Context, _ *auth.RequestAuth, _ int) (string, error) {
+func (m *testGeminiDS) CreateSession(_ context.Context, _ *auth.RequestAuth, _ int) (string, error) {
 	return "session-id", nil
 }
 
 //nolint:unused // reserved test double for native Gemini DS-call path coverage.
-func (m testGeminiDS) GetPow(_ context.Context, _ *auth.RequestAuth, _ int) (string, error) {
+func (m *testGeminiDS) GetPow(_ context.Context, _ *auth.RequestAuth, _ int) (string, error) {
 	return "pow", nil
 }
 
 //nolint:unused // reserved test double for native Gemini DS-call path coverage.
-func (m testGeminiDS) CallCompletion(_ context.Context, _ *auth.RequestAuth, _ map[string]any, _ string, _ int) (*http.Response, error) {
+func (m *testGeminiDS) UploadFile(_ context.Context, _ *auth.RequestAuth, req dsclient.UploadFileRequest, _ int) (*dsclient.UploadFileResult, error) {
+	m.uploadCalls = append(m.uploadCalls, req)
+	return &dsclient.UploadFileResult{ID: "file-gemini-history"}, nil
+}
+
+//nolint:unused // reserved test double for native Gemini DS-call path coverage.
+func (m *testGeminiDS) CallCompletion(_ context.Context, _ *auth.RequestAuth, payload map[string]any, _ string, _ int) (*http.Response, error) {
+	m.payloads = append(m.payloads, payload)
 	if m.err != nil {
 		return nil, m.err
 	}
@@ -120,6 +131,46 @@ func makeGeminiUpstreamResponse(lines ...string) *http.Response {
 		StatusCode: http.StatusOK,
 		Header:     make(http.Header),
 		Body:       io.NopCloser(strings.NewReader(body)),
+	}
+}
+
+func TestGeminiDirectAppliesCurrentInputFile(t *testing.T) {
+	ds := &testGeminiDS{
+		resp: makeGeminiUpstreamResponse(`data: {"p":"response/content","v":"ok"}`),
+	}
+	h := &Handler{
+		Store: testGeminiConfig{},
+		Auth:  testGeminiAuth{},
+		DS:    ds,
+	}
+	reqBody := `{"contents":[{"role":"user","parts":[{"text":"hello from gemini"}]}]}`
+	req := httptest.NewRequest(http.MethodPost, "/v1beta/models/gemini-2.5-pro:generateContent", strings.NewReader(reqBody))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	r := chi.NewRouter()
+	RegisterRoutes(r, h)
+
+	r.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	if len(ds.uploadCalls) != 1 {
+		t.Fatalf("expected one current input upload, got %d", len(ds.uploadCalls))
+	}
+	if ds.uploadCalls[0].Filename != "DS2API_HISTORY.txt" {
+		t.Fatalf("unexpected upload filename: %q", ds.uploadCalls[0].Filename)
+	}
+	if len(ds.payloads) != 1 {
+		t.Fatalf("expected one completion payload, got %d", len(ds.payloads))
+	}
+	refIDs, _ := ds.payloads[0]["ref_file_ids"].([]any)
+	if len(refIDs) != 1 || refIDs[0] != "file-gemini-history" {
+		t.Fatalf("expected uploaded history ref id, got %#v", ds.payloads[0]["ref_file_ids"])
+	}
+	prompt, _ := ds.payloads[0]["prompt"].(string)
+	if !strings.Contains(prompt, "Continue from the latest state in the attached DS2API_HISTORY.txt context.") {
+		t.Fatalf("expected continuation prompt, got %q", prompt)
 	}
 }
 
@@ -254,6 +305,56 @@ func TestStreamGenerateContentEmitsSSE(t *testing.T) {
 	parts, _ := content["parts"].([]any)
 	if len(parts) == 0 {
 		t.Fatalf("expected non-empty parts in finish frame content, got %#v", content)
+	}
+}
+
+func TestNativeStreamGenerateContentEmitsThoughtParts(t *testing.T) {
+	h := &Handler{}
+	resp := makeGeminiUpstreamResponse(
+		`data: {"p":"response/thinking_content","v":"think"}`,
+		`data: {"p":"response/content","v":"answer"}`,
+		`data: [DONE]`,
+	)
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1beta/models/gemini-2.5-pro:streamGenerateContent", nil)
+
+	h.handleStreamGenerateContent(rec, req, resp, "gemini-2.5-pro", "prompt", true, false, nil, nil)
+
+	frames := extractGeminiSSEFrames(t, rec.Body.String())
+	if len(frames) < 2 {
+		t.Fatalf("expected thought and text stream frames, body=%s", rec.Body.String())
+	}
+	var gotThought, gotText string
+	for _, frame := range frames {
+		for _, part := range geminiPartsFromFrame(frame) {
+			if part["thought"] == true {
+				gotThought += asString(part["text"])
+			} else {
+				gotText += asString(part["text"])
+			}
+		}
+	}
+	if gotThought != "think" {
+		t.Fatalf("expected thought part, got %q body=%s", gotThought, rec.Body.String())
+	}
+	if !strings.Contains(gotText, "answer") {
+		t.Fatalf("expected text part answer, got %q body=%s", gotText, rec.Body.String())
+	}
+}
+
+func TestBuildGeminiPartsFromFinalIncludesThoughtPart(t *testing.T) {
+	parts := buildGeminiPartsFromFinal("answer", "think", nil)
+	if len(parts) != 2 {
+		t.Fatalf("expected thought + answer parts, got %#v", parts)
+	}
+	if parts[0]["thought"] != true || parts[0]["text"] != "think" {
+		t.Fatalf("expected first part to be thought, got %#v", parts[0])
+	}
+	if _, ok := parts[1]["thought"]; ok {
+		t.Fatalf("expected second part to be visible text, got %#v", parts[1])
+	}
+	if parts[1]["text"] != "answer" {
+		t.Fatalf("expected answer text, got %#v", parts[1])
 	}
 }
 
@@ -395,4 +496,22 @@ func extractGeminiSSEFrames(t *testing.T, body string) []map[string]any {
 		out = append(out, frame)
 	}
 	return out
+}
+
+func geminiPartsFromFrame(frame map[string]any) []map[string]any {
+	candidates, _ := frame["candidates"].([]any)
+	if len(candidates) == 0 {
+		return nil
+	}
+	c0, _ := candidates[0].(map[string]any)
+	content, _ := c0["content"].(map[string]any)
+	rawParts, _ := content["parts"].([]any)
+	parts := make([]map[string]any, 0, len(rawParts))
+	for _, raw := range rawParts {
+		part, _ := raw.(map[string]any)
+		if part != nil {
+			parts = append(parts, part)
+		}
+	}
+	return parts
 }
