@@ -2,6 +2,7 @@ package claude
 
 import (
 	"ds2api/internal/assistantturn"
+	"ds2api/internal/responsehistory"
 	"ds2api/internal/sse"
 	"ds2api/internal/toolcall"
 	"ds2api/internal/toolstream"
@@ -175,6 +176,15 @@ func (s *claudeStreamRuntime) finalize(stopReason string) {
 	if outcome.HasToolCalls {
 		stopReason = "tool_use"
 	}
+	if s.history != nil {
+		s.history.Success(
+			200,
+			responsehistory.ThinkingForArchive(turn.RawThinking, turn.DetectionThinking, turn.Thinking),
+			responsehistory.TextForArchive(turn.RawText, turn.Text),
+			stopReason,
+			responsehistory.GenericUsage(turn),
+		)
+	}
 
 	s.send("message_delta", map[string]any{
 		"type": "message_delta",
@@ -191,10 +201,16 @@ func (s *claudeStreamRuntime) finalize(stopReason string) {
 
 func (s *claudeStreamRuntime) onFinalize(reason streamengine.StopReason, scannerErr error) {
 	if string(reason) == "upstream_error" {
+		if s.history != nil {
+			s.history.Error(500, s.upstreamErr, "upstream_error", responsehistory.ThinkingForArchive(s.rawThinking.String(), s.toolDetectionThinking.String(), s.thinking.String()), responsehistory.TextForArchive(s.rawText.String(), s.text.String()))
+		}
 		s.sendError(s.upstreamErr)
 		return
 	}
 	if scannerErr != nil {
+		if s.history != nil {
+			s.history.Error(500, scannerErr.Error(), "error", responsehistory.ThinkingForArchive(s.rawThinking.String(), s.toolDetectionThinking.String(), s.thinking.String()), responsehistory.TextForArchive(s.rawText.String(), s.text.String()))
+		}
 		s.sendError(scannerErr.Error())
 		return
 	}

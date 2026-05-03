@@ -18,6 +18,7 @@ import (
 	dsprotocol "ds2api/internal/deepseek/protocol"
 	openaifmt "ds2api/internal/format/openai"
 	"ds2api/internal/promptcompat"
+	"ds2api/internal/responsehistory"
 	"ds2api/internal/sse"
 	streamengine "ds2api/internal/stream"
 )
@@ -95,15 +96,27 @@ func (h *Handler) Responses(w http.ResponseWriter, r *http.Request) {
 	}
 
 	responseID := "resp_" + strings.ReplaceAll(uuid.NewString(), "-", "")
+	historySession := responsehistory.Start(responsehistory.StartParams{
+		Store:    h.ChatHistory,
+		Request:  r,
+		Auth:     a,
+		Surface:  "openai.responses",
+		Standard: stdReq,
+	})
 	if !stdReq.Stream {
 		result, outErr := completionruntime.ExecuteNonStreamWithRetry(r.Context(), h.DS, a, stdReq, completionruntime.Options{
-			StripReferenceMarkers: stripReferenceMarkersEnabled(),
-			RetryEnabled:          true,
-			CurrentInputFile:      h.Store,
+			RetryEnabled:     true,
+			CurrentInputFile: h.Store,
 		})
 		if outErr != nil {
+			if historySession != nil {
+				historySession.ErrorTurn(outErr.Status, outErr.Message, outErr.Code, result.Turn)
+			}
 			writeOpenAIErrorWithCode(w, outErr.Status, outErr.Message, outErr.Code)
 			return
+		}
+		if historySession != nil {
+			historySession.SuccessTurn(http.StatusOK, result.Turn, assistantturn.OpenAIResponsesUsage(result.Turn))
 		}
 		responseObj := openaifmt.BuildResponseObjectWithToolCalls(responseID, stdReq.ResponseModel, result.Turn.Prompt, result.Turn.Thinking, result.Turn.Text, result.Turn.ToolCalls, stdReq.ToolsRaw)
 		responseObj["usage"] = assistantturn.OpenAIResponsesUsage(result.Turn)
@@ -116,13 +129,16 @@ func (h *Handler) Responses(w http.ResponseWriter, r *http.Request) {
 		CurrentInputFile: h.Store,
 	})
 	if outErr != nil {
+		if historySession != nil {
+			historySession.Error(outErr.Status, outErr.Message, outErr.Code, "", "")
+		}
 		writeOpenAIErrorWithCode(w, outErr.Status, outErr.Message, outErr.Code)
 		return
 	}
 
 	streamReq := start.Request
 	refFileTokens := streamReq.RefFileTokens
-	h.handleResponsesStreamWithRetry(w, r, a, start.Response, start.Payload, start.Pow, owner, responseID, streamReq.ResponseModel, streamReq.PromptTokenText, refFileTokens, streamReq.Thinking, streamReq.Search, streamReq.ToolNames, streamReq.ToolsRaw, streamReq.ToolChoice, traceID)
+	h.handleResponsesStreamWithRetry(w, r, a, start.Response, start.Payload, start.Pow, owner, responseID, streamReq.ResponseModel, streamReq.PromptTokenText, refFileTokens, streamReq.Thinking, streamReq.Search, streamReq.ToolNames, streamReq.ToolsRaw, streamReq.ToolChoice, traceID, historySession)
 }
 
 func (h *Handler) handleResponsesNonStream(w http.ResponseWriter, resp *http.Response, owner, responseID, model, finalPrompt string, refFileTokens int, thinkingEnabled, searchEnabled bool, toolNames []string, toolsRaw any, toolChoice promptcompat.ToolChoicePolicy, traceID string) {
@@ -135,14 +151,13 @@ func (h *Handler) handleResponsesNonStream(w http.ResponseWriter, resp *http.Res
 	result := sse.CollectStream(resp, thinkingEnabled, true)
 
 	turn := assistantturn.BuildTurnFromCollected(result, assistantturn.BuildOptions{
-		Model:                 model,
-		Prompt:                finalPrompt,
-		RefFileTokens:         refFileTokens,
-		SearchEnabled:         searchEnabled,
-		StripReferenceMarkers: stripReferenceMarkersEnabled(),
-		ToolNames:             toolNames,
-		ToolsRaw:              toolsRaw,
-		ToolChoice:            toolChoice,
+		Model:         model,
+		Prompt:        finalPrompt,
+		RefFileTokens: refFileTokens,
+		SearchEnabled: searchEnabled,
+		ToolNames:     toolNames,
+		ToolsRaw:      toolsRaw,
+		ToolChoice:    toolChoice,
 	})
 	logResponsesToolPolicyRejection(traceID, toolChoice, turn.ParsedToolCalls, "text")
 	outcome := assistantturn.FinalizeTurn(turn, assistantturn.FinalizeOptions{})
@@ -198,6 +213,7 @@ func (h *Handler) handleResponsesStream(w http.ResponseWriter, r *http.Request, 
 		func(obj map[string]any) {
 			h.getResponseStore().put(owner, responseID, obj)
 		},
+		nil,
 	)
 	streamRuntime.refFileTokens = refFileTokens
 	streamRuntime.sendCreated()

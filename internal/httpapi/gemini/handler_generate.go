@@ -2,6 +2,7 @@ package gemini
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
@@ -14,8 +15,10 @@ import (
 	"ds2api/internal/assistantturn"
 	"ds2api/internal/auth"
 	"ds2api/internal/completionruntime"
+	"ds2api/internal/httpapi/openai/history"
 	"ds2api/internal/httpapi/requestbody"
 	"ds2api/internal/promptcompat"
+	"ds2api/internal/responsehistory"
 	"ds2api/internal/sse"
 	"ds2api/internal/toolcall"
 	"ds2api/internal/translatorcliproxy"
@@ -76,33 +79,65 @@ func (h *Handler) handleGeminiDirect(w http.ResponseWriter, r *http.Request, str
 		return true
 	}
 	defer h.Auth.Release(a)
+	stdReq, err = h.applyCurrentInputFile(r.Context(), a, stdReq)
+	if err != nil {
+		status, message := mapCurrentInputFileError(err)
+		writeGeminiError(w, status, message)
+		return true
+	}
+	historySession := responsehistory.Start(responsehistory.StartParams{
+		Store:    h.ChatHistory,
+		Request:  r,
+		Auth:     a,
+		Surface:  "gemini.generate_content",
+		Standard: stdReq,
+	})
 	if stream {
-		h.handleGeminiDirectStream(w, r, a, stdReq)
+		h.handleGeminiDirectStream(w, r, a, stdReq, historySession)
 		return true
 	}
 	result, outErr := completionruntime.ExecuteNonStreamWithRetry(r.Context(), h.DS, a, stdReq, completionruntime.Options{
-		StripReferenceMarkers: stripReferenceMarkersEnabled(),
-		RetryEnabled:          true,
-		CurrentInputFile:      h.Store,
+		RetryEnabled:     true,
+		CurrentInputFile: h.Store,
 	})
 	if outErr != nil {
+		if historySession != nil {
+			historySession.ErrorTurn(outErr.Status, outErr.Message, outErr.Code, result.Turn)
+		}
 		writeGeminiError(w, outErr.Status, outErr.Message)
 		return true
+	}
+	if historySession != nil {
+		historySession.SuccessTurn(http.StatusOK, result.Turn, responsehistory.GenericUsage(result.Turn))
 	}
 	writeJSON(w, http.StatusOK, buildGeminiGenerateContentResponseFromTurn(result.Turn))
 	return true
 }
 
-func (h *Handler) handleGeminiDirectStream(w http.ResponseWriter, r *http.Request, a *auth.RequestAuth, stdReq promptcompat.StandardRequest) {
+func (h *Handler) applyCurrentInputFile(ctx context.Context, a *auth.RequestAuth, stdReq promptcompat.StandardRequest) (promptcompat.StandardRequest, error) {
+	if h == nil {
+		return stdReq, nil
+	}
+	return (history.Service{Store: h.Store, DS: h.DS}).ApplyCurrentInputFile(ctx, a, stdReq)
+}
+
+func mapCurrentInputFileError(err error) (int, string) {
+	return history.MapError(err)
+}
+
+func (h *Handler) handleGeminiDirectStream(w http.ResponseWriter, r *http.Request, a *auth.RequestAuth, stdReq promptcompat.StandardRequest, historySession *responsehistory.Session) {
 	start, outErr := completionruntime.StartCompletion(r.Context(), h.DS, a, stdReq, completionruntime.Options{
 		CurrentInputFile: h.Store,
 	})
 	if outErr != nil {
+		if historySession != nil {
+			historySession.Error(outErr.Status, outErr.Message, outErr.Code, "", "")
+		}
 		writeGeminiError(w, outErr.Status, outErr.Message)
 		return
 	}
 	streamReq := start.Request
-	h.handleStreamGenerateContent(w, r, start.Response, streamReq.ResponseModel, streamReq.PromptTokenText, streamReq.Thinking, streamReq.Search, streamReq.ToolNames, streamReq.ToolsRaw)
+	h.handleStreamGenerateContent(w, r, start.Response, streamReq.ResponseModel, streamReq.PromptTokenText, streamReq.Thinking, streamReq.Search, streamReq.ToolNames, streamReq.ToolsRaw, historySession)
 }
 
 func (h *Handler) proxyViaOpenAI(w http.ResponseWriter, r *http.Request, stream bool) bool {
@@ -294,12 +329,11 @@ func (h *Handler) handleNonStreamGenerateContent(w http.ResponseWriter, resp *ht
 	}
 
 	result := sse.CollectStream(resp, thinkingEnabled, true)
-	stripReferenceMarkers := stripReferenceMarkersEnabled()
 	writeJSON(w, http.StatusOK, buildGeminiGenerateContentResponse(
 		model,
 		finalPrompt,
-		cleanVisibleOutput(result.Thinking, stripReferenceMarkers),
-		cleanVisibleOutput(result.Text, stripReferenceMarkers),
+		cleanVisibleOutput(result.Thinking, false),
+		cleanVisibleOutput(result.Text, false),
 		toolNames,
 	))
 }

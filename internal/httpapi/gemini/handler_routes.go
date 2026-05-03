@@ -5,6 +5,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
+	"ds2api/internal/chathistory"
 	"ds2api/internal/textclean"
 	"ds2api/internal/util"
 )
@@ -12,10 +13,11 @@ import (
 var writeJSON = util.WriteJSON
 
 type Handler struct {
-	Store  ConfigReader
-	Auth   AuthResolver
-	DS     DeepSeekCaller
-	OpenAI OpenAIChatRunner
+	Store       ConfigReader
+	Auth        AuthResolver
+	DS          DeepSeekCaller
+	OpenAI      OpenAIChatRunner
+	ChatHistory *chathistory.Store
 }
 
 //nolint:unused // used by native Gemini stream/non-stream runtime helpers.

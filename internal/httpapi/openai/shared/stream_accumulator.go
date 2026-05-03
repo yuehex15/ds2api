@@ -89,11 +89,11 @@ func (a *StreamAccumulator) applyTextPart(text string) StreamPartDelta {
 	}
 	a.RawText.WriteString(rawTrimmed)
 	delta := StreamPartDelta{Type: "text", RawText: rawTrimmed}
-	cleanedText := CleanVisibleOutput(rawTrimmed, a.StripReferenceMarkers)
-	if a.SearchEnabled && sse.IsCitation(cleanedText) {
+	if a.SearchEnabled && sse.IsCitation(rawTrimmed) {
 		delta.CitationOnly = true
 		return delta
 	}
+	cleanedText := CleanVisibleOutput(rawTrimmed, a.StripReferenceMarkers)
 	trimmed := sse.TrimContinuationOverlapFromBuilder(&a.Text, cleanedText)
 	if trimmed == "" {
 		return delta

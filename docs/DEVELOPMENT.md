@@ -74,6 +74,7 @@ gofmt -w <changed-go-files>
 
 - Admin API：`/admin/chat-history`、`/admin/chat-history/{id}`。
 - 后端存储：`internal/chathistory/store.go`。
+- 输出归档：`internal/responsehistory` 在协议回译/裁剪前记录 DeepSeek 上游 assistant text / thinking；即使工具调用已被对外响应转成结构化 `tool_calls` 并从可见正文剔除，后台历史仍应保留原始 DSML / XML 片段，方便排查格式漂移。
 - 前端轮询和 ETag：`webui/src/features/chatHistory/ChatHistoryContainer.jsx`。
 
 Tool call 问题优先跑：

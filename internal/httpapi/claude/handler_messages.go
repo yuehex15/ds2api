@@ -2,6 +2,7 @@ package claude
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -15,8 +16,10 @@ import (
 	"ds2api/internal/completionruntime"
 	"ds2api/internal/config"
 	claudefmt "ds2api/internal/format/claude"
+	"ds2api/internal/httpapi/openai/history"
 	"ds2api/internal/httpapi/requestbody"
 	"ds2api/internal/promptcompat"
+	"ds2api/internal/responsehistory"
 	streamengine "ds2api/internal/stream"
 	"ds2api/internal/translatorcliproxy"
 	"ds2api/internal/util"
@@ -79,38 +82,70 @@ func (h *Handler) handleClaudeDirect(w http.ResponseWriter, r *http.Request) boo
 		return true
 	}
 	defer h.Auth.Release(a)
-	if norm.Standard.Stream {
-		h.handleClaudeDirectStream(w, r, a, norm.Standard)
+	stdReq, err := h.applyCurrentInputFile(r.Context(), a, norm.Standard)
+	if err != nil {
+		status, message := mapCurrentInputFileError(err)
+		writeClaudeError(w, status, message)
 		return true
 	}
-	result, outErr := completionruntime.ExecuteNonStreamWithRetry(r.Context(), h.DS, a, norm.Standard, completionruntime.Options{
-		StripReferenceMarkers: stripReferenceMarkersEnabled(),
-		RetryEnabled:          true,
-		CurrentInputFile:      h.Store,
+	historySession := responsehistory.Start(responsehistory.StartParams{
+		Store:    h.ChatHistory,
+		Request:  r,
+		Auth:     a,
+		Surface:  "claude.messages",
+		Standard: stdReq,
+	})
+	if stdReq.Stream {
+		h.handleClaudeDirectStream(w, r, a, stdReq, historySession)
+		return true
+	}
+	result, outErr := completionruntime.ExecuteNonStreamWithRetry(r.Context(), h.DS, a, stdReq, completionruntime.Options{
+		RetryEnabled:     true,
+		CurrentInputFile: h.Store,
 	})
 	if outErr != nil {
+		if historySession != nil {
+			historySession.ErrorTurn(outErr.Status, outErr.Message, outErr.Code, result.Turn)
+		}
 		writeClaudeError(w, outErr.Status, outErr.Message)
 		return true
 	}
+	if historySession != nil {
+		historySession.SuccessTurn(http.StatusOK, result.Turn, responsehistory.GenericUsage(result.Turn))
+	}
 	writeJSON(w, http.StatusOK, claudefmt.BuildMessageResponseFromTurn(
 		fmt.Sprintf("msg_%d", time.Now().UnixNano()),
-		norm.Standard.ResponseModel,
+		stdReq.ResponseModel,
 		result.Turn,
 		exposeThinking,
 	))
 	return true
 }
 
-func (h *Handler) handleClaudeDirectStream(w http.ResponseWriter, r *http.Request, a *auth.RequestAuth, stdReq promptcompat.StandardRequest) {
+func (h *Handler) applyCurrentInputFile(ctx context.Context, a *auth.RequestAuth, stdReq promptcompat.StandardRequest) (promptcompat.StandardRequest, error) {
+	if h == nil {
+		return stdReq, nil
+	}
+	return (history.Service{Store: h.Store, DS: h.DS}).ApplyCurrentInputFile(ctx, a, stdReq)
+}
+
+func mapCurrentInputFileError(err error) (int, string) {
+	return history.MapError(err)
+}
+
+func (h *Handler) handleClaudeDirectStream(w http.ResponseWriter, r *http.Request, a *auth.RequestAuth, stdReq promptcompat.StandardRequest, historySession *responsehistory.Session) {
 	start, outErr := completionruntime.StartCompletion(r.Context(), h.DS, a, stdReq, completionruntime.Options{
 		CurrentInputFile: h.Store,
 	})
 	if outErr != nil {
+		if historySession != nil {
+			historySession.Error(outErr.Status, outErr.Message, outErr.Code, "", "")
+		}
 		writeClaudeError(w, outErr.Status, outErr.Message)
 		return
 	}
 	streamReq := start.Request
-	h.handleClaudeStreamRealtime(w, r, start.Response, streamReq.ResponseModel, streamReq.Messages, streamReq.Thinking, streamReq.Search, streamReq.ToolNames, streamReq.ToolsRaw)
+	h.handleClaudeStreamRealtime(w, r, start.Response, streamReq.ResponseModel, streamReq.Messages, streamReq.Thinking, streamReq.Search, streamReq.ToolNames, streamReq.ToolsRaw, historySession)
 }
 
 func (h *Handler) proxyViaOpenAI(w http.ResponseWriter, r *http.Request, store ConfigReader) bool {
@@ -264,10 +299,17 @@ func stripClaudeThinkingBlocks(raw []byte) []byte {
 	return out
 }
 
-func (h *Handler) handleClaudeStreamRealtime(w http.ResponseWriter, r *http.Request, resp *http.Response, model string, messages []any, thinkingEnabled, searchEnabled bool, toolNames []string, toolsRaw any) {
+func (h *Handler) handleClaudeStreamRealtime(w http.ResponseWriter, r *http.Request, resp *http.Response, model string, messages []any, thinkingEnabled, searchEnabled bool, toolNames []string, toolsRaw any, historySessions ...*responsehistory.Session) {
+	var historySession *responsehistory.Session
+	if len(historySessions) > 0 {
+		historySession = historySessions[0]
+	}
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
+		if historySession != nil {
+			historySession.Error(resp.StatusCode, strings.TrimSpace(string(body)), "error", "", "")
+		}
 		writeClaudeError(w, http.StatusInternalServerError, string(body))
 		return
 	}
@@ -294,6 +336,7 @@ func (h *Handler) handleClaudeStreamRealtime(w http.ResponseWriter, r *http.Requ
 		toolNames,
 		toolsRaw,
 		buildClaudePromptTokenText(messages, thinkingEnabled),
+		historySession,
 	)
 	streamRuntime.sendMessageStart()
 

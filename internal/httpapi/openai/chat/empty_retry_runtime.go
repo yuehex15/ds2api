@@ -31,6 +31,14 @@ type chatNonStreamResult struct {
 	outputError           *assistantturn.OutputError
 }
 
+func (r chatNonStreamResult) historyText() string {
+	return historyTextForArchive(r.rawText, r.text)
+}
+
+func (r chatNonStreamResult) historyThinking() string {
+	return historyThinkingForArchive(r.rawThinking, r.toolDetectionThinking, r.thinking)
+}
+
 func (h *Handler) handleNonStreamWithRetry(w http.ResponseWriter, ctx context.Context, a *auth.RequestAuth, resp *http.Response, payload map[string]any, pow, completionID, model, finalPrompt string, refFileTokens int, thinkingEnabled, searchEnabled bool, toolNames []string, toolsRaw any, historySession *chatHistorySession) {
 	attempts := 0
 	currentResp := resp
@@ -70,7 +78,7 @@ func (h *Handler) handleNonStreamWithRetry(w http.ResponseWriter, ctx context.Co
 		nextResp, err := h.DS.CallCompletion(ctx, a, retryPayload, retryPow, 3)
 		if err != nil {
 			if historySession != nil {
-				historySession.error(http.StatusInternalServerError, "Failed to get completion.", "error", result.thinking, result.text)
+				historySession.error(http.StatusInternalServerError, "Failed to get completion.", "error", result.historyThinking(), result.historyText())
 			}
 			writeOpenAIError(w, http.StatusInternalServerError, "Failed to get completion.")
 			config.Logger.Warn("[openai_empty_retry] retry request failed", "surface", "chat.completions", "stream", false, "retry_attempt", attempts, "error", err)
@@ -90,12 +98,11 @@ func (h *Handler) collectChatNonStreamAttempt(w http.ResponseWriter, resp *http.
 	}
 	result := sse.CollectStream(resp, thinkingEnabled, true)
 	turn := assistantturn.BuildTurnFromCollected(result, assistantturn.BuildOptions{
-		Model:                 model,
-		Prompt:                usagePrompt,
-		SearchEnabled:         searchEnabled,
-		StripReferenceMarkers: stripReferenceMarkersEnabled(),
-		ToolNames:             toolNames,
-		ToolsRaw:              toolsRaw,
+		Model:         model,
+		Prompt:        usagePrompt,
+		SearchEnabled: searchEnabled,
+		ToolNames:     toolNames,
+		ToolsRaw:      toolsRaw,
 	})
 	respBody := openaifmt.BuildChatCompletionWithToolCalls(completionID, model, usagePrompt, turn.Thinking, turn.Text, turn.ToolCalls, toolsRaw)
 	return chatNonStreamResult{
@@ -120,14 +127,14 @@ func (h *Handler) finishChatNonStreamResult(w http.ResponseWriter, result chatNo
 			status, message, code = result.outputError.Status, result.outputError.Message, result.outputError.Code
 		}
 		if historySession != nil {
-			historySession.error(status, message, code, result.thinking, result.text)
+			historySession.error(status, message, code, result.historyThinking(), result.historyText())
 		}
 		writeOpenAIErrorWithCode(w, status, message, code)
 		config.Logger.Info("[openai_empty_retry] terminal empty output", "surface", "chat.completions", "stream", false, "retry_attempts", attempts, "success_source", "none", "content_filter", result.contentFilter)
 		return
 	}
 	if historySession != nil {
-		historySession.success(http.StatusOK, result.thinking, result.text, result.finishReason, openaifmt.BuildChatUsageForModel("", usagePrompt, result.thinking, result.text, refFileTokens))
+		historySession.success(http.StatusOK, result.historyThinking(), result.historyText(), result.finishReason, openaifmt.BuildChatUsageForModel("", usagePrompt, result.thinking, result.text, refFileTokens))
 	}
 	writeJSON(w, http.StatusOK, result.body)
 	source := "first_attempt"
@@ -246,7 +253,7 @@ func (h *Handler) consumeChatStreamAttempt(r *http.Request, resp *http.Response,
 		OnParsed: func(parsed sse.LineResult) streamengine.ParsedDecision {
 			decision := streamRuntime.onParsed(parsed)
 			if historySession != nil {
-				historySession.progress(streamRuntime.accumulator.Thinking.String(), streamRuntime.accumulator.Text.String())
+				historySession.progress(streamRuntime.historyThinking(), streamRuntime.historyText())
 			}
 			return decision
 		},
@@ -258,7 +265,7 @@ func (h *Handler) consumeChatStreamAttempt(r *http.Request, resp *http.Response,
 		OnContextDone: func() {
 			streamRuntime.markContextCancelled()
 			if historySession != nil {
-				historySession.stopped(streamRuntime.accumulator.Thinking.String(), streamRuntime.accumulator.Text.String(), string(streamengine.StopReasonContextCancelled))
+				historySession.stopped(streamRuntime.historyThinking(), streamRuntime.historyText(), string(streamengine.StopReasonContextCancelled))
 			}
 		},
 	})
@@ -278,16 +285,16 @@ func recordChatStreamHistory(streamRuntime *chatStreamRuntime, historySession *c
 		return
 	}
 	if streamRuntime.finalErrorMessage != "" {
-		historySession.error(streamRuntime.finalErrorStatus, streamRuntime.finalErrorMessage, streamRuntime.finalErrorCode, streamRuntime.accumulator.Thinking.String(), streamRuntime.accumulator.Text.String())
+		historySession.error(streamRuntime.finalErrorStatus, streamRuntime.finalErrorMessage, streamRuntime.finalErrorCode, streamRuntime.historyThinking(), streamRuntime.historyText())
 		return
 	}
-	historySession.success(http.StatusOK, streamRuntime.finalThinking, streamRuntime.finalText, streamRuntime.finalFinishReason, streamRuntime.finalUsage)
+	historySession.success(http.StatusOK, streamRuntime.historyThinking(), streamRuntime.historyText(), streamRuntime.finalFinishReason, streamRuntime.finalUsage)
 }
 
 func failChatStreamRetry(streamRuntime *chatStreamRuntime, historySession *chatHistorySession, status int, message, code string) {
 	streamRuntime.sendFailedChunk(status, message, code)
 	if historySession != nil {
-		historySession.error(status, message, code, streamRuntime.accumulator.Thinking.String(), streamRuntime.accumulator.Text.String())
+		historySession.error(status, message, code, streamRuntime.historyThinking(), streamRuntime.historyText())
 	}
 }
 

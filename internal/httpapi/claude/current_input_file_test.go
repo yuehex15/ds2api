@@ -5,14 +5,24 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"ds2api/internal/auth"
+	"ds2api/internal/chathistory"
 	dsclient "ds2api/internal/deepseek/client"
 )
 
 type claudeCurrentInputAuth struct{}
+
+type claudeHistoryConfig struct {
+	aliases map[string]string
+}
+
+func (m claudeHistoryConfig) ModelAliases() map[string]string { return m.aliases }
+func (claudeHistoryConfig) CurrentInputFileEnabled() bool     { return false }
+func (claudeHistoryConfig) CurrentInputFileMinChars() int     { return 0 }
 
 func (claudeCurrentInputAuth) Determine(*http.Request) (*auth.RequestAuth, error) {
 	return &auth.RequestAuth{
@@ -20,6 +30,50 @@ func (claudeCurrentInputAuth) Determine(*http.Request) (*auth.RequestAuth, error
 		CallerID:      "caller:test",
 		TriedAccounts: map[string]bool{},
 	}, nil
+}
+
+func TestClaudeDirectRecordsResponseHistory(t *testing.T) {
+	ds := &claudeCurrentInputDS{}
+	historyStore := chathistory.New(filepath.Join(t.TempDir(), "history.json"))
+	h := &Handler{
+		Store:       claudeHistoryConfig{aliases: map[string]string{"claude-sonnet-4-6": "deepseek-v4-flash"}},
+		Auth:        claudeCurrentInputAuth{},
+		DS:          ds,
+		ChatHistory: historyStore,
+	}
+	reqBody := `{"model":"claude-sonnet-4-6","messages":[{"role":"user","content":"hello from claude"}],"max_tokens":1024}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(reqBody))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	h.Messages(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	snapshot, err := historyStore.Snapshot()
+	if err != nil {
+		t.Fatalf("snapshot history: %v", err)
+	}
+	if len(snapshot.Items) != 1 {
+		t.Fatalf("expected one history item, got %d", len(snapshot.Items))
+	}
+	item, err := historyStore.Get(snapshot.Items[0].ID)
+	if err != nil {
+		t.Fatalf("get history item: %v", err)
+	}
+	if item.Surface != "claude.messages" {
+		t.Fatalf("unexpected surface: %q", item.Surface)
+	}
+	if item.Model != "claude-sonnet-4-6" {
+		t.Fatalf("unexpected model: %q", item.Model)
+	}
+	if item.UserInput != "hello from claude" {
+		t.Fatalf("unexpected user input: %q", item.UserInput)
+	}
+	if item.Content != "ok" {
+		t.Fatalf("expected raw upstream content, got %q", item.Content)
+	}
 }
 
 func (claudeCurrentInputAuth) Release(*auth.RequestAuth) {}
@@ -53,10 +107,12 @@ func (d *claudeCurrentInputDS) CallCompletion(_ context.Context, _ *auth.Request
 
 func TestClaudeDirectAppliesCurrentInputFile(t *testing.T) {
 	ds := &claudeCurrentInputDS{}
+	historyStore := chathistory.New(filepath.Join(t.TempDir(), "history.json"))
 	h := &Handler{
-		Store: mockClaudeConfig{aliases: map[string]string{"claude-sonnet-4-6": "deepseek-v4-flash"}},
-		Auth:  claudeCurrentInputAuth{},
-		DS:    ds,
+		Store:       mockClaudeConfig{aliases: map[string]string{"claude-sonnet-4-6": "deepseek-v4-flash"}},
+		Auth:        claudeCurrentInputAuth{},
+		DS:          ds,
+		ChatHistory: historyStore,
 	}
 	reqBody := `{"model":"claude-sonnet-4-6","messages":[{"role":"user","content":"hello from claude"}],"max_tokens":1024}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(reqBody))
@@ -81,5 +137,22 @@ func TestClaudeDirectAppliesCurrentInputFile(t *testing.T) {
 	prompt, _ := ds.payload["prompt"].(string)
 	if !strings.Contains(prompt, "Continue from the latest state in the attached DS2API_HISTORY.txt context.") {
 		t.Fatalf("expected continuation prompt, got %q", prompt)
+	}
+	snapshot, err := historyStore.Snapshot()
+	if err != nil {
+		t.Fatalf("snapshot history: %v", err)
+	}
+	if len(snapshot.Items) != 1 {
+		t.Fatalf("expected one history item, got %d", len(snapshot.Items))
+	}
+	full, err := historyStore.Get(snapshot.Items[0].ID)
+	if err != nil {
+		t.Fatalf("get history item: %v", err)
+	}
+	if full.HistoryText != string(ds.uploads[0].Data) {
+		t.Fatalf("expected uploaded current input file to be persisted in history text")
+	}
+	if len(full.Messages) != 1 || !strings.Contains(full.Messages[0].Content, "Continue from the latest state in the attached DS2API_HISTORY.txt context.") {
+		t.Fatalf("expected persisted message to match upstream continuation prompt, got %#v", full.Messages)
 	}
 }

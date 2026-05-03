@@ -10,6 +10,7 @@ import (
 	openaifmt "ds2api/internal/format/openai"
 	"ds2api/internal/httpapi/openai/shared"
 	"ds2api/internal/promptcompat"
+	"ds2api/internal/responsehistory"
 	"ds2api/internal/sse"
 	streamengine "ds2api/internal/stream"
 	"ds2api/internal/toolstream"
@@ -61,6 +62,7 @@ type responsesStreamRuntime struct {
 	finalErrorCode    string
 
 	persistResponse func(obj map[string]any)
+	history         *responsehistory.Session
 }
 
 func newResponsesStreamRuntime(
@@ -80,6 +82,7 @@ func newResponsesStreamRuntime(
 	toolChoice promptcompat.ToolChoicePolicy,
 	traceID string,
 	persistResponse func(obj map[string]any),
+	history *responsehistory.Session,
 ) *responsesStreamRuntime {
 	return &responsesStreamRuntime{
 		w:                     w,
@@ -106,6 +109,7 @@ func newResponsesStreamRuntime(
 		toolChoice:            toolChoice,
 		traceID:               traceID,
 		persistResponse:       persistResponse,
+		history:               history,
 		accumulator: shared.StreamAccumulator{
 			ThinkingEnabled:       thinkingEnabled,
 			SearchEnabled:         searchEnabled,
@@ -137,6 +141,9 @@ func (s *responsesStreamRuntime) failResponse(status int, message, code string) 
 	}
 	if s.persistResponse != nil {
 		s.persistResponse(failedResp)
+	}
+	if s.history != nil {
+		s.history.Error(status, message, code, responsehistory.ThinkingForArchive(s.accumulator.RawThinking.String(), s.accumulator.ToolDetectionThinking.String(), s.accumulator.Thinking.String()), responsehistory.TextForArchive(s.accumulator.RawText.String(), s.accumulator.Text.String()))
 	}
 	s.sendEvent("response.failed", openaifmt.BuildResponsesFailedPayload(s.responseID, s.model, status, message, code))
 	s.sendDone()
@@ -214,6 +221,15 @@ func (s *responsesStreamRuntime) finalize(finishReason string, deferEmptyOutput 
 	if s.persistResponse != nil {
 		s.persistResponse(obj)
 	}
+	if s.history != nil {
+		s.history.Success(
+			http.StatusOK,
+			responsehistory.ThinkingForArchive(turn.RawThinking, turn.DetectionThinking, turn.Thinking),
+			responsehistory.TextForArchive(turn.RawText, turn.Text),
+			outcome.FinishReason,
+			assistantturn.OpenAIResponsesUsage(turn),
+		)
+	}
 	s.sendEvent("response.completed", openaifmt.BuildResponsesCompletedPayload(obj))
 	s.sendDone()
 	return true
@@ -272,5 +288,11 @@ func (s *responsesStreamRuntime) onParsed(parsed sse.LineResult) streamengine.Pa
 	}
 
 	batch.flush()
+	if s.history != nil {
+		s.history.Progress(
+			responsehistory.ThinkingForArchive(s.accumulator.RawThinking.String(), s.accumulator.ToolDetectionThinking.String(), s.accumulator.Thinking.String()),
+			responsehistory.TextForArchive(s.accumulator.RawText.String(), s.accumulator.Text.String()),
+		)
+	}
 	return streamengine.ParsedDecision{ContentSeen: accumulated.ContentSeen}
 }

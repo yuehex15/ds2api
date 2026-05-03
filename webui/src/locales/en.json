@@ -18,8 +18,8 @@
             "desc": "Test API connectivity and responses"
         },
         "history": {
-            "label": "Conversations",
-            "desc": "Browse server-side external chat history"
+            "label": "Responses",
+            "desc": "Browse server-side upstream response records"
         },
         "import": {
             "label": "Batch Import",
@@ -261,7 +261,7 @@
         "loading": "Loading conversation history...",
         "loadFailed": "Failed to load conversation history.",
         "retentionTitle": "Retention",
-        "retentionDesc": "The server keeps only the latest N external /v1/chat/completions conversations.",
+        "retentionDesc": "The server keeps only the latest N DeepSeek upstream response records across OpenAI Chat, OpenAI Responses, Claude, and Gemini direct interfaces.",
         "off": "OFF",
         "refresh": "Refresh",
         "clearAll": "Clear all",
@@ -277,7 +277,7 @@
         "viewModeList": "List mode",
         "viewModeMerged": "Merged mode",
         "emptyTitle": "No conversation history yet",
-        "emptyDesc": "When external clients call /v1/chat/completions, the server will save the results here automatically.",
+        "emptyDesc": "When a supported interface talks to DeepSeek upstream and receives a response, the server saves the result here automatically.",
         "untitled": "Untitled conversation",
         "noPreview": "No preview available.",
         "selectPrompt": "Select a record on the left to view details.",
@@ -303,6 +303,7 @@
         "metaTitle": "Metadata",
         "metaAccount": "Account",
         "metaElapsed": "Elapsed",
+        "metaSurface": "Surface",
         "metaModel": "Model",
         "metaStatusCode": "Status code",
         "metaStream": "Output mode",

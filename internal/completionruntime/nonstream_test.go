@@ -119,6 +119,29 @@ func TestExecuteNonStreamWithRetryUsesParentMessageForEmptyRetry(t *testing.T) {
 	}
 }
 
+func TestExecuteNonStreamWithRetryConvertsReferenceMarkers(t *testing.T) {
+	ds := &fakeDeepSeekCaller{responses: []*http.Response{sseHTTPResponse(
+		http.StatusOK,
+		`data: {"p":"response/content","v":"答案[reference:0]。","citation":{"cite_index":0,"url":"https://example.com/ref"}}`,
+	)}}
+	stdReq := promptcompat.StandardRequest{
+		Surface:         "test",
+		ResponseModel:   "deepseek-v4-flash-search",
+		PromptTokenText: "prompt",
+		FinalPrompt:     "final prompt",
+		Search:          true,
+	}
+
+	result, outErr := ExecuteNonStreamWithRetry(context.Background(), ds, &auth.RequestAuth{}, stdReq, Options{})
+	if outErr != nil {
+		t.Fatalf("unexpected output error: %#v", outErr)
+	}
+	want := "答案[0](https://example.com/ref)。"
+	if result.Turn.Text != want {
+		t.Fatalf("text mismatch: got %q want %q", result.Turn.Text, want)
+	}
+}
+
 func TestStartCompletionAppliesCurrentInputFileGlobally(t *testing.T) {
 	ds := &fakeDeepSeekCaller{responses: []*http.Response{sseHTTPResponse(http.StatusOK, `data: {"p":"response/content","v":"ok"}`)}}
 	stdReq := promptcompat.StandardRequest{

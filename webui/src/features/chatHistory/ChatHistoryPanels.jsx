@@ -69,7 +69,7 @@ export function ChatHistoryListPane({ items, selectedItem, deletingId, t, lang, 
                                     {item.user_input || t('chatHistory.untitled')}
                                 </div>
                                 <div className="text-[11px] text-muted-foreground mt-1 truncate">
-                                    {item.model || '-'}
+                                    {[item.surface, item.model].filter(Boolean).join(' · ') || '-'}
                                 </div>
                             </div>
                             <div className="flex items-center gap-2 shrink-0">

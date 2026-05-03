@@ -208,6 +208,10 @@ function MetaGrid({ selectedItem, t }) {
                     </div>
                 </div>
                 <div className="rounded-lg border border-border bg-card px-3 py-2">
+                    <div className="text-[11px] text-muted-foreground">{t('chatHistory.metaSurface')}</div>
+                    <div className="text-sm font-medium text-foreground break-all">{selectedItem.surface || t('chatHistory.metaUnknown')}</div>
+                </div>
+                <div className="rounded-lg border border-border bg-card px-3 py-2">
                     <div className="text-[11px] text-muted-foreground">{t('chatHistory.metaModel')}</div>
                     <div className="text-sm font-medium text-foreground break-all">{selectedItem.model || t('chatHistory.metaUnknown')}</div>
                 </div>

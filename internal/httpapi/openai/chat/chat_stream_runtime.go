@@ -195,6 +195,24 @@ func (s *chatStreamRuntime) markContextCancelled() {
 	s.finalFinishReason = string(streamengine.StopReasonContextCancelled)
 }
 
+func (s *chatStreamRuntime) historyText() string {
+	if s == nil {
+		return ""
+	}
+	return historyTextForArchive(s.accumulator.RawText.String(), s.finalText)
+}
+
+func (s *chatStreamRuntime) historyThinking() string {
+	if s == nil {
+		return ""
+	}
+	return historyThinkingForArchive(
+		s.accumulator.RawThinking.String(),
+		s.accumulator.ToolDetectionThinking.String(),
+		s.finalThinking,
+	)
+}
+
 func (s *chatStreamRuntime) resetStreamToolCallState() {
 	s.streamToolCallIDs = map[int]string{}
 	s.streamToolNames = map[int]string{}

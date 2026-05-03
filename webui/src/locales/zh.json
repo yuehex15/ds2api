@@ -18,8 +18,8 @@
             "desc": "测试 API 连接与响应"
         },
         "history": {
-            "label": "对话记录",
-            "desc": "查看服务器保存的外部对话历史"
+            "label": "响应记录",
+            "desc": "查看服务器保存的上游响应归档"
         },
         "import": {
             "label": "批量导入",
@@ -261,7 +261,7 @@
         "loading": "正在加载对话记录...",
         "loadFailed": "加载对话记录失败",
         "retentionTitle": "保留条数",
-        "retentionDesc": "服务器端只保留最新 N 条外部 /v1/chat/completions 对话记录。",
+        "retentionDesc": "服务器端只保留最新 N 条 DeepSeek 上游响应记录，覆盖 OpenAI Chat、OpenAI Responses、Claude 和 Gemini 直连接口。",
         "off": "OFF",
         "refresh": "刷新",
         "clearAll": "清空全部",
@@ -277,7 +277,7 @@
         "viewModeList": "列表模式",
         "viewModeMerged": "合并模式",
         "emptyTitle": "还没有可用的对话记录",
-        "emptyDesc": "当外部客户端调用 /v1/chat/completions 时，服务端会自动把结果写入这里。",
+        "emptyDesc": "当支持的接口与 DeepSeek 上游交互并收到响应时，服务端会自动把结果写入这里。",
         "untitled": "未命名对话",
         "noPreview": "暂无预览内容",
         "selectPrompt": "从左侧选择一条记录查看详情。",
@@ -303,6 +303,7 @@
         "metaTitle": "元信息",
         "metaAccount": "使用账号",
         "metaElapsed": "耗时",
+        "metaSurface": "接口",
         "metaModel": "模型",
         "metaStatusCode": "状态码",
         "metaStream": "输出模式",

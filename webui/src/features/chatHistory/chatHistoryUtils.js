@@ -15,10 +15,22 @@ const CURRENT_INPUT_FILE_PROMPT = 'Continue from the latest state in the attache
 const LEGACY_CURRENT_INPUT_FILE_PROMPTS = new Set([
     'The current request and prior conversation context have already been provided. Answer the latest user request directly.',
 ])
+const HISTORY_TRANSCRIPT_TITLE = '# DS2API_HISTORY.txt'
+const HISTORY_TRANSCRIPT_ENTRY_RE = /^===\s+\d+\.\s+([A-Z][A-Z_ -]*)\s+===\s*$/gm
 
 function isCurrentInputFilePrompt(value) {
     const text = String(value || '').trim()
     return text === CURRENT_INPUT_FILE_PROMPT || LEGACY_CURRENT_INPUT_FILE_PROMPTS.has(text)
+}
+
+function normalizeHistoryRole(role) {
+    const normalized = String(role || '').trim().toLowerCase()
+    if (normalized === 'function') return 'tool'
+    if (normalized === 'developer') return 'system'
+    if (normalized === 'system' || normalized === 'user' || normalized === 'assistant' || normalized === 'tool') {
+        return normalized
+    }
+    return normalized || 'system'
 }
 
 export function formatDateTime(value, lang) {
@@ -221,11 +233,37 @@ export function parseStrictHistoryMessages(historyText) {
     return parsed
 }
 
+export function parseTranscriptHistoryMessages(historyText) {
+    const rawText = String(historyText || '')
+    const titleIndex = rawText.indexOf(HISTORY_TRANSCRIPT_TITLE)
+    const transcript = titleIndex >= 0 ? rawText.slice(titleIndex) : rawText
+    const matches = [...transcript.matchAll(HISTORY_TRANSCRIPT_ENTRY_RE)]
+    if (!matches.length) return null
+
+    const parsed = []
+    for (let i = 0; i < matches.length; i += 1) {
+        const match = matches[i]
+        const next = matches[i + 1]
+        const role = normalizeHistoryRole(match[1])
+        const start = (match.index || 0) + match[0].length
+        const end = next ? next.index : transcript.length
+        const content = transcript.slice(start, end).replace(/^\r?\n/, '').trim()
+        if (!content) continue
+        parsed.push({ role, content })
+    }
+
+    return parsed.length ? parsed : null
+}
+
+export function parseHistoryMessages(historyText) {
+    return parseStrictHistoryMessages(historyText) || parseTranscriptHistoryMessages(historyText)
+}
+
 export function buildListModeMessages(item, t) {
     const liveMessages = Array.isArray(item?.messages) && item.messages.length > 0
         ? item.messages
         : [{ role: 'user', content: item?.user_input || t('chatHistory.emptyUserInput') }]
-    const historyMessages = parseStrictHistoryMessages(item?.history_text)
+    const historyMessages = parseHistoryMessages(item?.history_text)
 
     if (!historyMessages?.length) {
         return { messages: liveMessages, historyMerged: false }

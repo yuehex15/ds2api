@@ -10,6 +10,9 @@ import {
     VIEW_MODE_KEY,
 } from './chatHistoryUtils'
 
+const LIST_REFRESH_MS = 1500
+const STREAMING_DETAIL_REFRESH_MS = 750
+
 export default function ChatHistoryContainer({ authFetch, onMessage }) {
     const { t, lang } = useI18n()
     const apiFetch = authFetch || fetch
@@ -136,7 +139,7 @@ export default function ChatHistoryContainer({ authFetch, onMessage }) {
         if (!autoRefreshReady || limit === DISABLED_LIMIT) return undefined
         const timer = window.setInterval(() => {
             loadList({ mode: 'silent', announceError: false })
-        }, 5000)
+        }, LIST_REFRESH_MS)
         return () => window.clearInterval(timer)
     }, [autoRefreshReady, limit])
 
@@ -144,7 +147,7 @@ export default function ChatHistoryContainer({ authFetch, onMessage }) {
         if (!autoRefreshReady || !selectedId || selectedSummary?.status !== 'streaming') return undefined
         const timer = window.setInterval(() => {
             loadDetail(selectedId, { announceError: false })
-        }, 1000)
+        }, STREAMING_DETAIL_REFRESH_MS)
         return () => window.clearInterval(timer)
     }, [autoRefreshReady, selectedId, selectedSummary?.status])
 

@@ -9,15 +9,23 @@ import (
 
 	"ds2api/internal/assistantturn"
 	dsprotocol "ds2api/internal/deepseek/protocol"
+	"ds2api/internal/responsehistory"
 	"ds2api/internal/sse"
 	streamengine "ds2api/internal/stream"
 )
 
 //nolint:unused // retained for native Gemini stream handling path.
-func (h *Handler) handleStreamGenerateContent(w http.ResponseWriter, r *http.Request, resp *http.Response, model, finalPrompt string, thinkingEnabled, searchEnabled bool, toolNames []string, toolsRaw any) {
+func (h *Handler) handleStreamGenerateContent(w http.ResponseWriter, r *http.Request, resp *http.Response, model, finalPrompt string, thinkingEnabled, searchEnabled bool, toolNames []string, toolsRaw any, historySessions ...*responsehistory.Session) {
+	var historySession *responsehistory.Session
+	if len(historySessions) > 0 {
+		historySession = historySessions[0]
+	}
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
+		if historySession != nil {
+			historySession.Error(resp.StatusCode, strings.TrimSpace(string(body)), "error", "", "")
+		}
 		writeGeminiError(w, resp.StatusCode, strings.TrimSpace(string(body)))
 		return
 	}
@@ -29,7 +37,7 @@ func (h *Handler) handleStreamGenerateContent(w http.ResponseWriter, r *http.Req
 
 	rc := http.NewResponseController(w)
 	_, canFlush := w.(http.Flusher)
-	runtime := newGeminiStreamRuntime(w, rc, canFlush, model, finalPrompt, thinkingEnabled, searchEnabled, stripReferenceMarkersEnabled(), toolNames, toolsRaw)
+	runtime := newGeminiStreamRuntime(w, rc, canFlush, model, finalPrompt, thinkingEnabled, searchEnabled, stripReferenceMarkersEnabled(), toolNames, toolsRaw, historySession)
 
 	initialType := "text"
 	if thinkingEnabled {
@@ -70,6 +78,7 @@ type geminiStreamRuntime struct {
 	accumulator       *assistantturn.Accumulator
 	contentFilter     bool
 	responseMessageID int
+	history           *responsehistory.Session
 }
 
 //nolint:unused // retained for native Gemini stream handling path.
@@ -84,6 +93,7 @@ func newGeminiStreamRuntime(
 	stripReferenceMarkers bool,
 	toolNames []string,
 	toolsRaw any,
+	history *responsehistory.Session,
 ) *geminiStreamRuntime {
 	return &geminiStreamRuntime{
 		w:                     w,
@@ -97,6 +107,7 @@ func newGeminiStreamRuntime(
 		stripReferenceMarkers: stripReferenceMarkers,
 		toolNames:             toolNames,
 		toolsRaw:              toolsRaw,
+		history:               history,
 		accumulator: assistantturn.NewAccumulator(assistantturn.AccumulatorOptions{
 			ThinkingEnabled:       thinkingEnabled,
 			SearchEnabled:         searchEnabled,
@@ -170,6 +181,13 @@ func (s *geminiStreamRuntime) onParsed(parsed sse.LineResult) streamengine.Parse
 			"modelVersion": s.model,
 		})
 	}
+	if s.history != nil {
+		rawText, text, rawThinking, thinking, detectionThinking := s.accumulator.Snapshot()
+		s.history.Progress(
+			responsehistory.ThinkingForArchive(rawThinking, detectionThinking, thinking),
+			responsehistory.TextForArchive(rawText, text),
+		)
+	}
 	return streamengine.ParsedDecision{ContentSeen: accumulated.ContentSeen}
 }
 
@@ -193,6 +211,15 @@ func (s *geminiStreamRuntime) finalize() {
 		ToolsRaw:              s.toolsRaw,
 	})
 	outcome := assistantturn.FinalizeTurn(turn, assistantturn.FinalizeOptions{})
+	if s.history != nil {
+		s.history.Success(
+			http.StatusOK,
+			responsehistory.ThinkingForArchive(turn.RawThinking, turn.DetectionThinking, turn.Thinking),
+			responsehistory.TextForArchive(turn.RawText, turn.Text),
+			assistantturn.FinishReason(turn),
+			responsehistory.GenericUsage(turn),
+		)
+	}
 
 	if s.bufferContent {
 		parts := buildGeminiPartsFromTurn(turn)

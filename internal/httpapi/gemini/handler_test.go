@@ -7,12 +7,14 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/go-chi/chi/v5"
 
 	"ds2api/internal/auth"
+	"ds2api/internal/chathistory"
 	dsclient "ds2api/internal/deepseek/client"
 )
 
@@ -138,10 +140,12 @@ func TestGeminiDirectAppliesCurrentInputFile(t *testing.T) {
 	ds := &testGeminiDS{
 		resp: makeGeminiUpstreamResponse(`data: {"p":"response/content","v":"ok"}`),
 	}
+	historyStore := chathistory.New(filepath.Join(t.TempDir(), "history.json"))
 	h := &Handler{
-		Store: testGeminiConfig{},
-		Auth:  testGeminiAuth{},
-		DS:    ds,
+		Store:       testGeminiConfig{},
+		Auth:        testGeminiAuth{},
+		DS:          ds,
+		ChatHistory: historyStore,
 	}
 	reqBody := `{"contents":[{"role":"user","parts":[{"text":"hello from gemini"}]}]}`
 	req := httptest.NewRequest(http.MethodPost, "/v1beta/models/gemini-2.5-pro:generateContent", strings.NewReader(reqBody))
@@ -171,6 +175,29 @@ func TestGeminiDirectAppliesCurrentInputFile(t *testing.T) {
 	prompt, _ := ds.payloads[0]["prompt"].(string)
 	if !strings.Contains(prompt, "Continue from the latest state in the attached DS2API_HISTORY.txt context.") {
 		t.Fatalf("expected continuation prompt, got %q", prompt)
+	}
+	snapshot, err := historyStore.Snapshot()
+	if err != nil {
+		t.Fatalf("snapshot history: %v", err)
+	}
+	if len(snapshot.Items) != 1 {
+		t.Fatalf("expected one history item, got %d", len(snapshot.Items))
+	}
+	full, err := historyStore.Get(snapshot.Items[0].ID)
+	if err != nil {
+		t.Fatalf("get history item: %v", err)
+	}
+	if full.Surface != "gemini.generate_content" {
+		t.Fatalf("unexpected surface: %q", full.Surface)
+	}
+	if full.Content != "ok" {
+		t.Fatalf("expected raw upstream content, got %q", full.Content)
+	}
+	if full.HistoryText != string(ds.uploadCalls[0].Data) {
+		t.Fatalf("expected uploaded current input file to be persisted in history text")
+	}
+	if len(full.Messages) != 1 || !strings.Contains(full.Messages[0].Content, "Continue from the latest state in the attached DS2API_HISTORY.txt context.") {
+		t.Fatalf("expected persisted message to match upstream continuation prompt, got %#v", full.Messages)
 	}
 }
 

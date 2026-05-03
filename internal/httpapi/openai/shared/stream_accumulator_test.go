@@ -95,3 +95,21 @@ func TestStreamAccumulatorSuppressesCitationTextWhenSearchEnabled(t *testing.T) 
 		t.Fatalf("visible text = %q", got)
 	}
 }
+
+func TestStreamAccumulatorStripsInlineCitationAndReferenceMarkers(t *testing.T) {
+	acc := StreamAccumulator{SearchEnabled: true, StripReferenceMarkers: true}
+	result := acc.Apply(sse.LineResult{
+		Parsed: true,
+		Parts:  []sse.ContentPart{{Type: "text", Text: "广州天气[citation:1] 多云[reference:0]"}},
+	})
+
+	if !result.ContentSeen {
+		t.Fatalf("expected marker chunk to mark upstream content")
+	}
+	if got := acc.Text.String(); got != "广州天气 多云" {
+		t.Fatalf("visible text = %q", got)
+	}
+	if len(result.Parts) != 1 || result.Parts[0].VisibleText != "广州天气 多云" {
+		t.Fatalf("unexpected parts: %#v", result.Parts)
+	}
+}
