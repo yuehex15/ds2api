@@ -92,43 +92,9 @@ func filterToolCallsDetailed(parsed []ParsedToolCall) ([]ParsedToolCall, []strin
 		if tc.Input == nil {
 			tc.Input = map[string]any{}
 		}
-		if len(tc.Input) > 0 && !toolCallInputHasMeaningfulValue(tc.Input) {
-			continue
-		}
 		out = append(out, tc)
 	}
 	return out, nil
-}
-
-func toolCallInputHasMeaningfulValue(v any) bool {
-	switch x := v.(type) {
-	case nil:
-		return false
-	case string:
-		return strings.TrimSpace(x) != ""
-	case map[string]any:
-		if len(x) == 0 {
-			return false
-		}
-		for _, child := range x {
-			if toolCallInputHasMeaningfulValue(child) {
-				return true
-			}
-		}
-		return false
-	case []any:
-		if len(x) == 0 {
-			return false
-		}
-		for _, child := range x {
-			if toolCallInputHasMeaningfulValue(child) {
-				return true
-			}
-		}
-		return false
-	default:
-		return true
-	}
 }
 
 func looksLikeToolCallSyntax(text string) bool {
@@ -212,17 +178,16 @@ func firstFenceMarkerIndex(line string) int {
 }
 
 func updateCDATAStateForStrip(inCDATA bool, cdataFenceMarker, line string) (bool, string) {
-	lower := strings.ToLower(line)
 	pos := 0
 	state := inCDATA
 	fenceMarker := cdataFenceMarker
 	lineForFence := line
 	if !state {
-		start := strings.Index(lower[pos:], "<![cdata[")
+		start := indexASCIIFold(line, pos, "<![cdata[")
 		if start < 0 {
 			return false, ""
 		}
-		pos += start + len("<![cdata[")
+		pos = start + len("<![cdata[")
 		state = true
 		lineForFence = line[pos:]
 	}
@@ -239,24 +204,23 @@ func updateCDATAStateForStrip(inCDATA bool, cdataFenceMarker, line string) (bool
 		fenceMarker = ""
 	}
 
-	for pos < len(lower) {
-		end := strings.Index(lower[pos:], "]]>")
-		if end < 0 {
+	for pos < len(line) {
+		endPos := indexASCIIFold(line, pos, "]]>")
+		if endPos < 0 {
 			return true, fenceMarker
 		}
-		endPos := pos + end
 		pos = endPos + len("]]>")
 		if fenceMarker != "" {
 			continue
 		}
-		if cdataEndLooksStructural(lower, pos) || strings.TrimSpace(lower[pos:]) == "" {
+		if cdataEndLooksStructural(line, pos) || strings.TrimSpace(line[pos:]) == "" {
 			state = false
-			for pos < len(lower) {
-				start := strings.Index(lower[pos:], "<![cdata[")
+			for pos < len(line) {
+				start := indexASCIIFold(line, pos, "<![cdata[")
 				if start < 0 {
 					return false, ""
 				}
-				pos += start + len("<![cdata[")
+				pos = start + len("<![cdata[")
 				state = true
 				trimmedTail := strings.TrimLeft(line[pos:], " \t")
 				if marker, ok := parseFenceOpen(trimmedTail); ok {

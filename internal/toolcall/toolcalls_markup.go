@@ -10,7 +10,7 @@ import (
 var toolCallMarkupKVPattern = regexp.MustCompile(`(?is)<(?:[a-z0-9_:-]+:)?([a-z0-9_\-.]+)\b[^>]*>(.*?)</(?:[a-z0-9_:-]+:)?([a-z0-9_\-.]+)>`)
 
 // cdataPattern matches a standalone CDATA section.
-var cdataPattern = regexp.MustCompile(`(?is)^<!\[CDATA\[(.*?)]]>$`)
+var cdataPattern = regexp.MustCompile(`(?is)^(?:<|〈)!\[CDATA\[(.*?)]](?:>|＞|〉)$`)
 
 func parseMarkupKVObject(text string) map[string]any {
 	matches := toolCallMarkupKVPattern.FindAllStringSubmatch(strings.TrimSpace(text), -1)
@@ -145,7 +145,6 @@ func SanitizeLooseCDATA(text string) string {
 		return ""
 	}
 
-	lower := strings.ToLower(text)
 	const openMarker = "<![cdata["
 	const closeMarker = "]]>"
 
@@ -154,17 +153,16 @@ func SanitizeLooseCDATA(text string) string {
 	changed := false
 	pos := 0
 	for pos < len(text) {
-		startRel := strings.Index(lower[pos:], openMarker)
-		if startRel < 0 {
+		start := indexASCIIFold(text, pos, openMarker)
+		if start < 0 {
 			b.WriteString(text[pos:])
 			break
 		}
-		start := pos + startRel
 		contentStart := start + len(openMarker)
 		b.WriteString(text[pos:start])
 
-		if endRel := strings.Index(lower[contentStart:], closeMarker); endRel >= 0 {
-			end := contentStart + endRel + len(closeMarker)
+		if endRel := indexASCIIFold(text, contentStart, closeMarker); endRel >= 0 {
+			end := endRel + len(closeMarker)
 			b.WriteString(text[start:end])
 			pos = end
 			continue
