@@ -2,6 +2,7 @@ package toolcall
 
 import (
 	"strings"
+	"unicode"
 	"unicode/utf8"
 )
 
@@ -14,6 +15,7 @@ type toolMarkupNameAlias struct {
 var toolMarkupNames = []toolMarkupNameAlias{
 	{raw: "tool_calls", canonical: "tool_calls"},
 	{raw: "tool-calls", canonical: "tool_calls", dsmlOnly: true},
+	{raw: "toolcalls", canonical: "tool_calls", dsmlOnly: true},
 	{raw: "invoke", canonical: "invoke"},
 	{raw: "parameter", canonical: "parameter"},
 }
@@ -38,6 +40,10 @@ func ContainsToolMarkupSyntaxOutsideIgnored(text string) (hasDSML, hasCanonical 
 		}
 		if advanced {
 			i = next
+			continue
+		}
+		if end, ok := markdownCodeSpanEnd(text, i); ok {
+			i = end
 			continue
 		}
 		if tag, ok := scanToolMarkupTagAt(text, i); ok {
@@ -65,6 +71,10 @@ func ContainsToolCallWrapperSyntaxOutsideIgnored(text string) (hasDSML, hasCanon
 		}
 		if advanced {
 			i = next
+			continue
+		}
+		if end, ok := markdownCodeSpanEnd(text, i); ok {
+			i = end
 			continue
 		}
 		if tag, ok := scanToolMarkupTagAt(text, i); ok {
@@ -96,6 +106,10 @@ func FindToolMarkupTagOutsideIgnored(text string, start int) (ToolMarkupTag, boo
 		}
 		if advanced {
 			i = next
+			continue
+		}
+		if end, ok := markdownCodeSpanEnd(text, i); ok {
+			i = end
 			continue
 		}
 		if tag, ok := scanToolMarkupTagAt(text, i); ok {
@@ -147,9 +161,9 @@ func scanToolMarkupTagAt(text string, start int) (ToolMarkupTag, bool) {
 		i = next
 	}
 	closing := false
-	if i < len(text) && text[i] == '/' {
+	if next, ok := consumeToolMarkupClosingSlash(text, i); ok {
 		closing = true
-		i++
+		i = next
 	}
 	prefixStart := i
 	i, dsmlLike := consumeToolMarkupNamePrefix(text, i)
@@ -159,28 +173,31 @@ func scanToolMarkupTagAt(text string, start int) (ToolMarkupTag, bool) {
 		if !ok {
 			return ToolMarkupTag{}, false
 		}
+		if !closing && toolMarkupPrefixContainsSlash(text[prefixStart:fallbackStart]) {
+			closing = true
+		}
 		name = fallbackName
 		i = fallbackStart
 		nameLen = fallbackLen
 		dsmlLike = true
 	}
 	nameEnd := i + nameLen
-	nameEndBeforePipes := nameEnd
-	for next, ok := consumeToolMarkupPipe(text, nameEnd); ok; next, ok = consumeToolMarkupPipe(text, nameEnd) {
+	nameEndBeforeSeparators := nameEnd
+	for next, ok := consumeToolMarkupSeparator(text, nameEnd); ok; next, ok = consumeToolMarkupSeparator(text, nameEnd) {
 		nameEnd = next
 	}
-	hasTrailingPipe := nameEnd > nameEndBeforePipes
+	hasTrailingSeparator := nameEnd > nameEndBeforeSeparators
 	if !hasToolMarkupBoundary(text, nameEnd) {
 		return ToolMarkupTag{}, false
 	}
 	end := findXMLTagEnd(text, nameEnd)
 	if end < 0 {
-		if !hasTrailingPipe {
+		if !hasTrailingSeparator {
 			return ToolMarkupTag{}, false
 		}
 		end = nameEnd - 1
 	}
-	if hasTrailingPipe {
+	if hasTrailingSeparator {
 		if nextLT := strings.IndexByte(text[nameEnd:], '<'); nextLT >= 0 && end >= nameEnd+nextLT {
 			end = nameEnd - 1
 		}
@@ -248,17 +265,18 @@ func consumeToolMarkupNamePrefix(text string, idx int) (int, bool) {
 }
 
 func consumeToolMarkupNamePrefixOnce(text string, idx int) (int, bool) {
-	if next, ok := consumeToolMarkupPipe(text, idx); ok {
+	idx = skipToolMarkupIgnorables(text, idx)
+	if next, ok := consumeToolMarkupSeparator(text, idx); ok {
 		return next, true
 	}
-	if idx < len(text) && (text[idx] == ' ' || text[idx] == '\t' || text[idx] == '\r' || text[idx] == '\n') {
-		return idx + 1, true
+	if spacingLen := toolMarkupWhitespaceLikeLenAt(text, idx); spacingLen > 0 {
+		return idx + spacingLen, true
 	}
-	if hasASCIIPrefixFoldAt(text, idx, "dsml") {
-		dsmlLen, _ := matchASCIIPrefixFoldAt(text, idx, "dsml")
-		next := idx + dsmlLen
-		if sep, size := normalizedASCIIAt(text, next); sep == '-' || sep == '_' {
-			next += size
+	if next, ok := consumeToolKeyword(text, idx, "dsml"); ok {
+		if dashLen := toolMarkupDashLenAt(text, next); dashLen > 0 {
+			next += dashLen
+		} else if underscoreLen := toolMarkupUnderscoreLenAt(text, next); underscoreLen > 0 {
+			next += underscoreLen
 		}
 		return next, true
 	}
@@ -285,7 +303,7 @@ func consumeArbitraryToolMarkupNamePrefix(text string, idx int) (int, bool) {
 	for k < len(text) && (text[k] == ' ' || text[k] == '\t' || text[k] == '\r' || text[k] == '\n') {
 		k++
 	}
-	next, ok := consumeToolMarkupPipe(text, k)
+	next, ok := consumeToolMarkupSeparator(text, k)
 	if !ok {
 		if sep, size := normalizedASCIIAt(text, k); sep == '_' || sep == '-' {
 			next = k + size
@@ -349,8 +367,8 @@ func matchToolMarkupName(text string, start int, dsmlLike bool) (string, int) {
 		if name.dsmlOnly && !dsmlLike {
 			continue
 		}
-		if nameLen, ok := matchASCIIPrefixFoldAt(text, start, name.raw); ok {
-			return name.canonical, nameLen
+		if next, ok := consumeToolKeyword(text, start, name.raw); ok {
+			return name.canonical, next - start
 		}
 	}
 	return "", 0
@@ -362,14 +380,14 @@ func matchToolMarkupNameAfterArbitraryPrefix(text string, start int) (string, in
 			return "", 0, 0, false
 		}
 		for _, name := range toolMarkupNames {
-			nameLen, ok := matchASCIIPrefixFoldAt(text, idx, name.raw)
+			next, ok := consumeToolKeyword(text, idx, name.raw)
 			if !ok {
 				continue
 			}
-			if !toolMarkupPrefixAllowsLocalName(text[start:idx]) {
+			if !toolMarkupPrefixAllowsLocalNameAt(text, start, idx) {
 				continue
 			}
-			return name.canonical, idx, nameLen, true
+			return name.canonical, idx, next - idx, true
 		}
 		_, size := utf8.DecodeRuneInString(text[idx:])
 		if size <= 0 {
@@ -385,10 +403,10 @@ func hasPartialToolMarkupNameAfterArbitraryPrefix(text string, start int) bool {
 		if isToolMarkupTagTerminator(text, idx) {
 			return false
 		}
-		if toolMarkupPrefixAllowsLocalName(text[start:idx]) && hasToolMarkupNamePrefix(text, idx) {
+		if toolMarkupPrefixAllowsLocalNameAt(text, start, idx) && hasToolMarkupNamePrefix(text, idx) {
 			return true
 		}
-		if toolMarkupPrefixAllowsLocalName(text[start:idx]) && hasDSMLNamePrefixOrPartial(text, idx) {
+		if toolMarkupPrefixAllowsLocalNameAt(text, start, idx) && hasDSMLNamePrefixOrPartial(text, idx) {
 			return true
 		}
 		_, size := utf8.DecodeRuneInString(text[idx:])
@@ -398,6 +416,25 @@ func hasPartialToolMarkupNameAfterArbitraryPrefix(text string, start int) bool {
 		idx += size
 	}
 	return toolMarkupPrefixAllowsLocalName(text[start:])
+}
+
+func toolMarkupPrefixAllowsLocalNameAt(text string, start, localStart int) bool {
+	if start < 0 || localStart <= start || localStart > len(text) {
+		return false
+	}
+	prefix := text[start:localStart]
+	if toolMarkupPrefixAllowsLocalName(prefix) {
+		return true
+	}
+	if strings.ContainsAny(prefix, "=\"'") {
+		return false
+	}
+	prev, prevSize := utf8.DecodeLastRuneInString(prefix)
+	next, _ := utf8.DecodeRuneInString(text[localStart:])
+	if prevSize <= 0 || next == utf8.RuneError {
+		return false
+	}
+	return isASCIIAlphaNumeric(normalizeFullwidthASCII(prev)) && isASCIIUpper(normalizeFullwidthASCII(next))
 }
 
 func hasDSMLNamePrefixOrPartial(text string, start int) bool {
@@ -434,6 +471,14 @@ func normalizedASCIILowerString(text string) string {
 	return b.String()
 }
 
+func isASCIIAlphaNumeric(r rune) bool {
+	return (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9')
+}
+
+func isASCIIUpper(r rune) bool {
+	return r >= 'A' && r <= 'Z'
+}
+
 func isToolMarkupTagTerminator(text string, idx int) bool {
 	if idx >= len(text) {
 		return false
@@ -445,26 +490,37 @@ func isToolMarkupTagTerminator(text string, idx int) bool {
 	return normalizeFullwidthASCII(r) == '>'
 }
 
-func consumeToolMarkupPipe(text string, idx int) (int, bool) {
+func consumeToolMarkupSeparator(text string, idx int) (int, bool) {
+	idx = skipToolMarkupIgnorables(text, idx)
 	if idx >= len(text) {
 		return idx, false
 	}
-	if text[idx] == '|' {
-		return idx + 1, true
+	r, size := utf8.DecodeRuneInString(text[idx:])
+	if size <= 0 || !isToolMarkupSeparator(r) {
+		return idx, false
 	}
-	if text[idx] == '\x02' {
-		return idx + 1, true
+	return idx + size, true
+}
+
+func isToolMarkupSeparator(r rune) bool {
+	ch := normalizeFullwidthASCII(r)
+	if ch == 0 || ch == '<' || ch == '>' || ch == '/' || ch == '=' || ch == '"' || ch == '\'' || ch == '[' {
+		return false
 	}
-	if strings.HasPrefix(text[idx:], "｜") {
-		return idx + len("｜"), true
+	if ch == ' ' || ch == '\t' || ch == '\n' || ch == '\r' {
+		return false
 	}
-	if strings.HasPrefix(text[idx:], "␂") {
-		return idx + len("␂"), true
+	if r == '▁' || unicode.IsSpace(r) {
+		return false
 	}
-	return idx, false
+	if (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || (ch >= '0' && ch <= '9') {
+		return false
+	}
+	return true
 }
 
 func consumeToolMarkupLessThan(text string, idx int) (int, bool) {
+	idx = skipToolMarkupIgnorables(text, idx)
 	ch, size := normalizedASCIIAt(text, idx)
 	if size <= 0 || ch != '<' {
 		return idx, false
@@ -473,16 +529,17 @@ func consumeToolMarkupLessThan(text string, idx int) (int, bool) {
 }
 
 func hasToolMarkupBoundary(text string, idx int) bool {
+	idx = skipToolMarkupIgnorables(text, idx)
 	if idx >= len(text) {
 		return true
 	}
-	switch text[idx] {
-	case ' ', '\t', '\n', '\r', '>', '/':
+	if toolMarkupWhitespaceLikeLenAt(text, idx) > 0 {
 		return true
-	default:
-		r, _ := utf8.DecodeRuneInString(text[idx:])
-		return normalizeFullwidthASCII(r) == '>'
 	}
+	if _, ok := consumeToolMarkupClosingSlash(text, idx); ok {
+		return true
+	}
+	return xmlTagEndDelimiterLenAt(text, idx) > 0
 }
 
 func normalizedASCIIAt(text string, idx int) (byte, int) {
@@ -506,9 +563,22 @@ func normalizeFullwidthASCII(r rune) rune {
 		return '<'
 	case '〉':
 		return '>'
+	case '“', '”':
+		return '"'
+	case '‘', '’':
+		return '\''
 	}
 	if r >= '！' && r <= '～' {
 		return r - 0xFEE0
 	}
 	return r
+}
+
+func toolMarkupPrefixContainsSlash(prefix string) bool {
+	for _, r := range prefix {
+		if normalizeFullwidthASCII(r) == '/' {
+			return true
+		}
+	}
+	return false
 }
